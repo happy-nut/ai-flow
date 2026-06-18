@@ -315,6 +315,11 @@ function printDoctor(): void {
 }
 
 function renderDiffReview(args: string[]): void {
+  if (args.includes("--help") || args.includes("-h")) {
+    printDiffHelp();
+    return;
+  }
+
   if (!existsSync(join(process.cwd(), FLOW_DIR, CONFIG_FILE))) {
     initFlow(["--quiet"]);
   }
@@ -2048,6 +2053,21 @@ Legacy/manual:
   ai-flow next --agent codex
   ai-flow run worker --agent claude
   ai-flow verify
+`);
+}
+
+function printDiffHelp(): void {
+  console.log(`ai-flow diff
+
+Generate a browser-based side-by-side Git diff review.
+
+Usage:
+  ai-flow diff [--base HEAD] [--staged] [--include-untracked] [--context 12] [--output review.html] [--open] [--cmux]
+
+Keys in the review page:
+  F7         next changed hunk
+  Shift+F7  previous changed hunk
+  ] / [     fallback hunk navigation
 `);
 }
 
