@@ -47,11 +47,15 @@ Inside the repository you want AI agents to work on, run one command:
 ai-flow go
 ```
 
+With no objective, Planner opens and asks what you want to build. It should not dump old project progress.
+
 Or include the objective up front:
 
 ```bash
 ai-flow go "add the missing empty state and verify it"
 ```
+
+With an objective, Planner should split the work and immediately dispatch the first Worker when no user decision is needed.
 
 That command bootstraps the repo, installs ai-flow role instructions when needed, opens cmux when available, and starts a Planner agent. After that, the intended experience is:
 
@@ -108,10 +112,12 @@ ai-flow report --task T001 --file worker-report.md
 ## Commands
 
 ```bash
-ai-flow go [what you want built] [--agent codex|claude] [--dry-run] [--no-cmux]
+ai-flow go [what you want built] [--agent codex|claude] [--dry-run] [--no-cmux] [--no-auto-dispatch]
 ```
 
 Bootstraps the repository and starts Planner. When cmux is available and the command is run outside cmux, it opens a new cmux workspace for the Planner. When run inside cmux, it starts Planner in the current terminal. Without cmux, it starts Planner in the current terminal as a fallback.
+
+Worker panes appear after Planner dispatches them. If you want that to happen immediately, pass the objective directly to `ai-flow go`.
 
 ```bash
 ai-flow init [--force]

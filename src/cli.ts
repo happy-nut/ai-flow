@@ -217,7 +217,11 @@ function bootstrapPlanner(args: string[]): void {
   }
 
   const agent = selectPlannerAgent(explicitAgent);
-  const prompt = plannerBootPrompt({ agent, objective: message });
+  const prompt = plannerBootPrompt({
+    agent,
+    objective: message,
+    autoDispatch: !args.includes("--no-auto-dispatch"),
+  });
   const promptPath = savePrompt("planner", "planner", agent, prompt);
   const launchCommand = buildAgentReadPromptCommand(agent, "planner", promptPath);
   const cmuxAvailable = commandExists("cmux");
@@ -751,22 +755,62 @@ function plannerBrief(input: { agent: AgentName }): string {
   ].join("\n");
 }
 
-function plannerBootPrompt(input: { agent: AgentName; objective: string }): string {
-  const base = plannerBrief({ agent: input.agent });
+function plannerBootPrompt(input: {
+  agent: AgentName;
+  objective: string;
+  autoDispatch: boolean;
+}): string {
+  ensureInitialized();
+  const config = loadConfig();
+  const git = readGitSnapshot(process.cwd());
+  const tasks = parseTasks(readFlowFile(TASKS_FILE));
+  const active = tasks.find((task) => !task.done);
+  const commands = getVerificationCommands(config);
+  const state = readFlowFile(STATE_FILE);
+  const decisions = readFlowFile(DECISIONS_FILE);
   const objective = input.objective.trim();
   return [
-    base,
+    "# AI Flow Planner Boot",
     "",
-    "## Boot Behavior",
-    "- You are already in Planner mode. Do not ask the user to type a Planner activation phrase.",
-    "- Start by briefly stating the current repository state and the next action.",
-    "- If an objective was provided, turn it into small verifiable tasks and begin orchestration.",
-    "- If no objective was provided, ask the user what they want built or fixed, then continue as Planner.",
-    "- When appropriate, dispatch Workers or Reviewers through cmux with `ai-flow dispatch worker|reviewer --agent codex|claude`.",
+    "You are already in Planner mode. The user should not need to type an activation phrase or know cmux.",
+    "",
+    "## User-Facing Behavior",
+    "- Do not print a formal `Planner Brief` unless the user explicitly asks for one.",
+    "- Do not dump old `.ai-flow` progress on first contact. Treat it as private context.",
+    "- If no user objective is provided, ask one concise question: what should we build or fix?",
+    "- If there is existing `.ai-flow` progress and no objective, mention only that you can either resume existing work or start fresh. Do not list old tasks unless asked.",
+    "- If a user objective is provided, create/update small verifiable tasks and start orchestration immediately.",
+    input.autoDispatch
+      ? `- When the first Worker slice is clear and no user decision is needed, immediately run \`ai-flow dispatch worker --agent ${input.agent} --task <task-id>\`; do not ask for confirmation just to create the Worker pane.`
+      : "- Auto-dispatch is disabled. Prepare the first Worker slice, then wait for the user.",
     "- After Worker output, open visual review with `ai-flow diff --cmux` and inspect changed hunks with F7 / Shift+F7.",
+    "- Keep your visible response short: current action, Worker status if dispatched, and any question that genuinely blocks progress.",
     "",
     "## User Objective",
     objective || "(none provided yet)",
+    "",
+    "## Private Repository Context",
+    `Project: ${config.projectName}`,
+    `Agent adapter: ${input.agent}`,
+    `Branch: ${git.branch || "(unknown)"}`,
+    `Active task: ${active ? `${active.id} ${active.title}` : "none"}`,
+    "",
+    "### Git Status",
+    codeBlock(truncateText(git.status || "clean", 5000)),
+    "",
+    "### Diff Stat",
+    codeBlock(truncateText(git.diffStat || "no diff", 3500)),
+    "",
+    "### Durable State",
+    truncateMarkdown(state, 2200),
+    "",
+    "### Decisions",
+    truncateMarkdown(decisions, 1400),
+    "",
+    "### Verification Available",
+    commands.length > 0
+      ? commands.map((command) => `- \`${command}\``).join("\n")
+      : "- No root verification detected. Infer scoped validation from the touched subproject.",
     "",
   ].join("\n");
 }
