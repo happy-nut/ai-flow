@@ -734,22 +734,22 @@ function renderDiffHtml(input: {
     "<body>",
     '<aside class="sidebar" aria-label="Review navigation">',
     '<label class="search"><span class="visually-hidden">Search</span><input id="review-search" type="search" placeholder="Search files or code"></label>',
-    '<div class="tabs"><button type="button" class="tab active" data-tab="changes">Changes</button><button type="button" class="tab" data-tab="files">Files</button></div>',
-    `<div class="tab-panel" id="changes-panel">${fileNav}</div>`,
-    `<div class="tab-panel hidden" id="files-panel">${sourceNav}</div>`,
+    '<div class="tabs"><button type="button" class="tab" data-tab="changes">Changes</button><button type="button" class="tab active" data-tab="files">Files</button></div>',
+    `<div class="tab-panel hidden" id="changes-panel">${fileNav}</div>`,
+    `<div class="tab-panel" id="files-panel">${sourceNav}</div>`,
     "</aside>",
     '<main class="content">',
-    '<section id="diff-view">',
+    '<section id="diff-view" class="hidden">',
     '<div class="toolbar">',
     `<div class="review-status"><span>${input.files.length} files</span><span>${totalHunks} hunks</span><span>${embeddedFiles}/${input.sourceFiles.length} indexed</span><span class="live-status ${input.watch ? "watching" : ""}" id="live-status">${input.watch ? "watching" : escapeHtml(input.generatedAt ?? new Date().toISOString())}</span></div>`,
     `<div class="counter"><span id="hunk-counter">0</span> / ${totalHunks}</div>`,
     "</div>",
     `<div id="diff2html-container" class="diff2html-container">${input.diffHtml || '<div class="empty">No diff to review.</div>'}</div>`,
     "</section>",
-    '<section id="source-viewer" class="source-viewer hidden">',
+    '<section id="source-viewer" class="source-viewer">',
     '<div class="toolbar source-toolbar">',
     '<div class="source-file-meta"><span id="source-title">Source</span><span id="source-meta">Select a file from the Files tab.</span></div>',
-    '<button type="button" id="back-to-diff" class="plain-button">Back to diff</button>',
+    '<button type="button" id="back-to-diff" class="plain-button">Diff</button>',
     "</div>",
     '<div id="source-body" class="source-body empty">Select a file from the Files tab.</div>',
     "</section>",
@@ -1287,7 +1287,7 @@ function diffCss(): string {
 html, body { margin: 0; min-height: 100%; }
 body {
   display: grid;
-  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  grid-template-columns: minmax(240px, 340px) minmax(0, 1fr);
   background: var(--bg);
   color: var(--text);
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -1319,7 +1319,7 @@ body {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 9px 10px;
+  padding: 8px 9px;
   color: var(--text);
   background: var(--bg);
   font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -1328,7 +1328,7 @@ body {
 .tab, .plain-button {
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 7px 10px;
+  padding: 6px 9px;
   color: var(--text);
   background: var(--panel);
   font: 12px ui-sans-serif, system-ui, sans-serif;
@@ -1423,11 +1423,11 @@ body {
 .tree-dir { display: grid; gap: 2px; }
 .tree-dir summary {
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr);
+  grid-template-columns: 14px minmax(0, 1fr);
   align-items: center;
   gap: 4px;
-  min-height: 28px;
-  padding: 4px 6px 4px calc(6px + (var(--depth) * 14px));
+  min-height: 24px;
+  padding: 3px 5px 3px calc(5px + (var(--depth) * 13px));
   color: var(--muted);
   border-radius: 6px;
   cursor: default;
@@ -1439,17 +1439,18 @@ body {
 .folder-icon {
   display: inline-grid;
   place-items: center;
-  font-size: 10px;
+  font-size: 9px;
   color: var(--muted);
   transition: transform 120ms ease;
 }
-.tree-file { padding-left: calc(8px + (var(--depth) * 14px)); }
+.tree-file { padding-left: calc(6px + (var(--depth) * 13px)); }
 .file-link {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
-  padding: 8px;
+  gap: 6px;
+  min-height: 24px;
+  padding: 5px 6px;
   color: var(--text);
   text-decoration: none;
   border-radius: 6px;
@@ -1463,16 +1464,16 @@ body {
 .file-link:hover, .file-link.active { background: var(--bg); border-color: var(--border); }
 .file-link.viewed { opacity: 0.58; }
 .file-link.viewed:hover, .file-link.viewed.active { opacity: 1; }
-.path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
-.count { color: var(--muted); font-size: 12px; }
+.path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.count { color: var(--muted); font-size: 11px; }
 .status {
   display: inline-grid;
   place-items: center;
-  min-width: 18px;
-  height: 18px;
+  min-width: 16px;
+  height: 16px;
   border-radius: 4px;
-  padding: 0 4px;
-  font-size: 10px;
+  padding: 0 3px;
+  font-size: 9px;
   font-weight: 700;
   text-transform: uppercase;
   background: var(--line);
@@ -1543,6 +1544,7 @@ h1 { margin: 0; font-size: 18px; }
   border-radius: 8px;
   overflow: auto;
   background: var(--panel);
+  user-select: text;
 }
 .source-table {
   width: 100%;
@@ -1566,6 +1568,7 @@ h1 { margin: 0; font-size: 18px; }
 .source-code {
   padding: 2px 10px;
   cursor: text;
+  user-select: text;
 }
 .code-cursor {
   display: inline-block;
@@ -1836,7 +1839,22 @@ function setActive(index, shouldScroll = true) {
 }
 
 function next(delta) {
-  setActive(current < 0 ? 0 : current + delta);
+  setActive(current < 0 ? initialHunkForNavigation(delta) : current + delta);
+}
+
+function initialHunkForNavigation(delta) {
+  const openPath = document.getElementById('source-viewer')?.dataset.openPath || '';
+  const sourceHunk = firstHunkForPath(openPath);
+  if (sourceHunk >= 0) return sourceHunk;
+  return delta < 0 ? hunks.length - 1 : 0;
+}
+
+function firstHunkForPath(path) {
+  if (!path) return -1;
+  const link = links.find((candidate) => candidate.dataset.file === path);
+  if (!link) return -1;
+  const index = Number(link.dataset.hunk);
+  return Number.isNaN(index) ? -1 : index;
 }
 
 function openQuickOpen(mode) {
@@ -2036,6 +2054,13 @@ document.addEventListener('keydown', (event) => {
 
   if (event.key === 'F7') {
     event.preventDefault();
+    if (!document.getElementById('source-viewer')?.classList.contains('hidden')) {
+      const sourceHunk = firstHunkForPath(document.getElementById('source-viewer')?.dataset.openPath || '');
+      if (sourceHunk >= 0) {
+        setActive(sourceHunk);
+        return;
+      }
+    }
     next(event.shiftKey ? -1 : 1);
   } else if (event.key === ']') {
     event.preventDefault();
@@ -2087,6 +2112,7 @@ document.querySelectorAll('.tab').forEach((button) => {
 
 document.getElementById('back-to-diff')?.addEventListener('click', () => showDiffView(true));
 document.getElementById('source-body')?.addEventListener('click', handleSourceClick);
+document.addEventListener('copy', handleSourceCopy);
 
 searchInput?.addEventListener('input', () => {
   filterNavigation(searchInput.value);
@@ -2094,10 +2120,12 @@ searchInput?.addEventListener('input', () => {
   if (openPath) openSourceFile(openPath, false);
 });
 
-const initial = location.hash.match(/^#hunk-(\\d+)$/);
-if (initial) setActive(Number(initial[1]), false);
-else if (hunks.length > 0) setActive(0, false);
-restoreUiState();
+const restored = restoreUiState();
+if (!restored) {
+  const initial = location.hash.match(/^#hunk-(\\d+)$/);
+  if (initial) setActive(Number(initial[1]), false);
+  else openDefaultSourceFile();
+}
 if (watchEnabled) setInterval(checkForLiveUpdate, 1500);
 window.addEventListener('beforeunload', saveUiState);
 
@@ -2129,6 +2157,7 @@ function saveUiState() {
   sessionStorage.setItem(uiStateKey, JSON.stringify({
     search: searchInput?.value || '',
     tab: activeTab,
+    view: document.getElementById('source-viewer')?.classList.contains('hidden') ? 'diff' : 'source',
     sourcePath,
     hash: location.hash,
   }));
@@ -2136,21 +2165,26 @@ function saveUiState() {
 
 function restoreUiState() {
   const raw = sessionStorage.getItem(uiStateKey);
-  if (!raw) return;
+  if (!raw) return false;
   try {
     const state = JSON.parse(raw);
     if (searchInput && state.search) {
       searchInput.value = state.search;
       filterNavigation(state.search);
     }
+    if (state.view === 'diff') {
+      const match = String(state.hash || location.hash || '').match(/^#hunk-(\\d+)$/);
+      setActive(match ? Number(match[1]) : current >= 0 ? current : 0, false);
+      return true;
+    }
     if (state.sourcePath && sourceByPath.has(state.sourcePath)) {
       openSourceFile(state.sourcePath);
-    } else if (state.tab) {
-      setTab(state.tab);
+      return true;
     }
   } catch {
     sessionStorage.removeItem(uiStateKey);
   }
+  return false;
 }
 
 async function checkForLiveUpdate() {
@@ -2203,6 +2237,91 @@ function updateTreeVisibility(root, query) {
     details.hidden = query.length > 0 && !hasVisibleLeaf;
     if (query.length > 0 && hasVisibleLeaf) details.open = true;
   });
+}
+
+function openDefaultSourceFile() {
+  const file = sourceFiles.find((candidate) => candidate.changed && candidate.embedded)
+    || sourceFiles.find((candidate) => candidate.embedded)
+    || sourceFiles.find((candidate) => candidate.changed)
+    || sourceFiles[0];
+  if (file) {
+    openSourceFile(file.path);
+    return;
+  }
+  if (hunks.length > 0) setActive(0, false);
+}
+
+function handleSourceCopy(event) {
+  const selection = window.getSelection();
+  const sourceBody = document.getElementById('source-body');
+  const viewer = document.getElementById('source-viewer');
+  if (!selection || selection.isCollapsed || !sourceBody || !viewer || viewer.classList.contains('hidden')) return;
+  if (!selection.anchorNode || !selection.focusNode) return;
+  if (!sourceBody.contains(selection.anchorNode) || !sourceBody.contains(selection.focusNode)) return;
+
+  const path = viewer.dataset.openPath || '';
+  const file = sourceByPath.get(path);
+  if (!file || !file.embedded) return;
+  const rows = selectedSourceRows(selection);
+  if (rows.length === 0) return;
+
+  const lineNumbers = rows
+    .map((row) => Number(row.dataset.lineIndex || 0) + 1)
+    .filter((line) => Number.isFinite(line))
+    .sort((a, b) => a - b);
+  const startLine = lineNumbers[0];
+  const endLine = lineNumbers[lineNumbers.length - 1];
+  if (!startLine || !endLine) return;
+
+  const selectedText = cleanSelectedSourceText(selection.toString(), rows);
+  const code = selectedText || sourceLinesForRows(file, rows);
+  if (!code.trim()) return;
+
+  const reference = path + ':' + (startLine === endLine ? String(startLine) : startLine + '-' + endLine);
+  const language = file.language && file.language !== 'text' ? file.language : '';
+  const fence = String.fromCharCode(96).repeat(3);
+  const payload = reference + '\n\n' + fence + language + '\n' + code.replace(/\s+$/g, '') + '\n' + fence;
+  event.clipboardData?.setData('text/plain', payload);
+  event.preventDefault();
+}
+
+function selectedSourceRows(selection) {
+  if (!selection.rangeCount) return [];
+  const ranges = Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index));
+  return Array.from(document.querySelectorAll('#source-body .source-row'))
+    .filter((row) => ranges.some((range) => {
+      try {
+        return range.intersectsNode(row);
+      } catch {
+        return false;
+      }
+    }))
+    .sort((a, b) => Number(a.dataset.lineIndex || 0) - Number(b.dataset.lineIndex || 0));
+}
+
+function cleanSelectedSourceText(text, rows) {
+  const value = String(text || '').replace(/\r/g, '').replace(/\u200b/g, '');
+  if (!value.trim()) return '';
+  const lineNumbers = rows.map((row) => Number(row.dataset.lineIndex || 0) + 1);
+  const lines = value.split('\n');
+  if (lines.length >= lineNumbers.length) {
+    return lines
+      .map((line, index) => {
+        const lineNumber = lineNumbers[index];
+        return lineNumber ? line.replace(new RegExp('^\\s*' + lineNumber + '\\s+'), '') : line;
+      })
+      .join('\n')
+      .trimEnd();
+  }
+  return value.trimEnd();
+}
+
+function sourceLinesForRows(file, rows) {
+  const lines = file.content.split(/\r?\n/);
+  return rows
+    .map((row) => lines[Number(row.dataset.lineIndex || 0)] || '')
+    .join('\n')
+    .trimEnd();
 }
 
 function handleSourceClick(event) {

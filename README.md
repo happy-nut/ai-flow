@@ -70,14 +70,14 @@ ai-flow app --include-untracked
 
 The desktop review app is powered by Electron and diff2html. It reads Git diff and source files directly from the local repository, writes a local `.ai-flow/app-review.html` file, and refreshes when the working tree changes. It does not start an HTTP server.
 
-- `F7`: next changed hunk
+- `F7`: show the next changed hunk, starting from the current source file when possible
 - `Shift+F7`: previous changed hunk
 - `]` / `[`: fallback keys if the browser captures function keys
 - `Shift Shift`: search indexed files, including unchanged files
 - `Cmd/Ctrl+E`: open recent files
 - `Cmd/Ctrl+Down`: jump from the source cursor to a declaration-like match for the symbol under it
 
-The `Files` tab opens read-only source previews for indexed files even when they are unchanged. This is useful when validating whether an AI edit still fits surrounding code. Viewed marks are stored with file signatures, so a file becomes unviewed again when it changes.
+The app opens as a read-only source viewer by default. The `Files` tab opens indexed files even when they are unchanged, and `F7` switches into the diff view when you want to inspect changes. Drag-copying source text adds `path:line-range` plus a fenced code block to the clipboard so the snippet can be pasted into an AI prompt with context. Viewed marks are stored with file signatures, so a file becomes unviewed again when it changes.
 
 The browser artifact path is still available through `ai-flow diff`. Add `--watch` there only when you specifically want a browser-served live review.
 
