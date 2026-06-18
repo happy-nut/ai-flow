@@ -17,16 +17,15 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { html as renderDiff2HtmlMarkup } from "diff2html";
 
-type AgentName = "manual" | "codex" | "claude";
-type PromptRole = "worker" | "reviewer";
-type SessionRole = "planner" | "worker" | "reviewer";
-
 type FlowConfig = {
   version: 1;
   projectName: string;
-  defaultAgent: AgentName;
   verification: {
     commands: string[];
+  };
+  diff: {
+    context: number;
+    includeUntracked: boolean;
   };
 };
 
@@ -35,13 +34,6 @@ type GitSnapshot = {
   status: string;
   diffStat: string;
   recentCommits: string;
-};
-
-type Task = {
-  id: string;
-  title: string;
-  done: boolean;
-  raw: string;
 };
 
 type DiffLine = {
@@ -81,21 +73,6 @@ type DiffTreeNode = {
   };
 };
 
-type DiffReviewResult = {
-  path: string;
-  url: string;
-  files: number;
-  hunks: number;
-};
-
-type DiffReviewBuild = {
-  html: string;
-  files: number;
-  hunks: number;
-  signature: string;
-  generatedAt: string;
-};
-
 type SourceFile = {
   path: string;
   name: string;
@@ -114,15 +91,34 @@ type SourceTreeNode = {
   file?: SourceFile;
 };
 
+type DiffReviewResult = {
+  path: string;
+  url: string;
+  files: number;
+  hunks: number;
+};
+
+type DiffReviewBuild = {
+  html: string;
+  files: number;
+  hunks: number;
+  signature: string;
+  generatedAt: string;
+};
+
+type VerificationRun = {
+  commands: string[];
+  failed: boolean;
+  skipped: boolean;
+  logPath?: string;
+};
+
 const FLOW_DIR = ".ai-flow";
 const GITIGNORE_FILE = ".gitignore";
 const CONFIG_FILE = "config.json";
 const STATE_FILE = "state.md";
-const TASKS_FILE = "tasks.md";
 const DECISIONS_FILE = "decisions.md";
 const AGENT_SNIPPET_FILE = "agent-snippet.md";
-const CMUX_FILE = "cmux.md";
-const ROLES_DIR = "roles";
 const SOURCE_MAX_FILE_BYTES = 220_000;
 const SOURCE_MAX_TOTAL_BYTES = 5_000_000;
 const SOURCE_MAX_FILES = 1200;
@@ -139,20 +135,12 @@ function main(): void {
       case "install":
         installFlow(args);
         break;
+      case "check":
       case "go":
-        bootstrapPlanner(args);
+        runCheck(args);
         break;
-      case "start":
-        startSession(args);
-        break;
-      case "finish":
-        finishSession(args);
-        break;
-      case "dispatch":
-        dispatchSession(args);
-        break;
-      case "doctor":
-        printDoctor();
+      case "verify":
+        runVerification(args);
         break;
       case "diff":
         renderDiffReview(args);
@@ -160,20 +148,8 @@ function main(): void {
       case "status":
         printStatus();
         break;
-      case "next":
-        printNext(args);
-        break;
-      case "prompt":
-        printPromptCommand(args);
-        break;
       case "report":
         recordReport(args);
-        break;
-      case "verify":
-        runVerification(args);
-        break;
-      case "run":
-        runAgent(args);
         break;
       case "--help":
       case "-h":
@@ -196,37 +172,33 @@ function initFlow(args: string[]): void {
   const root = process.cwd();
   const flowPath = join(root, FLOW_DIR);
   mkdirSync(flowPath, { recursive: true });
-  mkdirSync(join(flowPath, "prompts"), { recursive: true });
   mkdirSync(join(flowPath, "reports"), { recursive: true });
   mkdirSync(join(flowPath, "logs"), { recursive: true });
   mkdirSync(join(flowPath, "diffs"), { recursive: true });
-  mkdirSync(join(flowPath, ROLES_DIR), { recursive: true });
 
   const config: FlowConfig = {
     version: 1,
     projectName: basename(root),
-    defaultAgent: "manual",
     verification: {
       commands: detectVerificationCommands(root),
     },
+    diff: {
+      context: 12,
+      includeUntracked: false,
+    },
   };
 
-  writeIfMissing(
-    join(flowPath, CONFIG_FILE),
-    `${JSON.stringify(config, null, 2)}\n`,
-    force,
-  );
+  writeIfMissing(join(flowPath, CONFIG_FILE), `${JSON.stringify(config, null, 2)}\n`, force);
   writeIfMissing(join(flowPath, STATE_FILE), initialState(config), force);
-  writeIfMissing(join(flowPath, TASKS_FILE), initialTasks(), force);
   writeIfMissing(join(flowPath, DECISIONS_FILE), initialDecisions(), force);
   const ignored = ensureAiFlowGitignore(root);
 
   if (!quiet) {
     console.log(`Initialized ${FLOW_DIR}/ in ${root}`);
     if (ignored) {
-      console.log(`Updated ${GITIGNORE_FILE} to ignore ${FLOW_DIR}/ local orchestration state.`);
+      console.log(`Updated ${GITIGNORE_FILE} to ignore ${FLOW_DIR}/ validation artifacts.`);
     }
-    console.log("Next: run `ai-flow install --apply-agent-docs` for role-based sessions.");
+    console.log("Next: run `ai-flow check --include-untracked --open` after an AI change.");
   }
 }
 
@@ -234,211 +206,91 @@ function installFlow(args: string[]): void {
   const force = args.includes("--force");
   const applyAgentDocs = args.includes("--apply-agent-docs");
   initFlow(["--quiet"]);
-  writeRoleFiles(force);
-  writeIfMissing(join(process.cwd(), FLOW_DIR, CMUX_FILE), cmuxGuide(), force);
-  writeIfMissing(
-    join(process.cwd(), FLOW_DIR, AGENT_SNIPPET_FILE),
-    agentSnippet(),
-    force,
-  );
-  if (applyAgentDocs) {
-    applyAgentDocSnippet("AGENTS.md");
-    applyAgentDocSnippet("CLAUDE.md");
-  }
-
-  console.log("Installed ai-flow role sessions.");
-  console.log(`- ${FLOW_DIR}/${ROLES_DIR}/planner.md`);
-  console.log(`- ${FLOW_DIR}/${ROLES_DIR}/worker.md`);
-  console.log(`- ${FLOW_DIR}/${ROLES_DIR}/reviewer.md`);
-  console.log(`- ${FLOW_DIR}/${CMUX_FILE}`);
-  if (applyAgentDocs) {
-    console.log("- Updated AGENTS.md / CLAUDE.md role trigger snippets where available.");
-  } else {
-    console.log(`Next: add ${FLOW_DIR}/${AGENT_SNIPPET_FILE} to your agent instructions.`);
-  }
-}
-
-function bootstrapPlanner(args: string[]): void {
-  const dryRun = args.includes("--dry-run");
-  const noCmux = args.includes("--no-cmux");
-  const applyAgentDocs = args.includes("--apply-agent-docs");
-  const force = args.includes("--force");
-  const explicitAgent = readOption(args, "--agent");
-  const objective = readFreeformObjective(args, new Set(["--agent", "--message"]));
-  const message = readOption(args, "--message") ?? objective;
-
-  initFlow(["--quiet"]);
-  writeRoleFiles(force);
-  writeIfMissing(join(process.cwd(), FLOW_DIR, CMUX_FILE), cmuxGuide(), force);
   writeIfMissing(join(process.cwd(), FLOW_DIR, AGENT_SNIPPET_FILE), agentSnippet(), force);
   if (applyAgentDocs) {
     applyAgentDocSnippet("AGENTS.md");
     applyAgentDocSnippet("CLAUDE.md");
   }
 
-  const agent = selectPlannerAgent(explicitAgent);
-  const prompt = plannerBootPrompt({
-    agent,
-    objective: message,
-    autoDispatch: !args.includes("--no-auto-dispatch"),
-  });
-  const promptPath = savePrompt("planner", "planner", agent, prompt);
-  const launchCommand = buildAgentReadPromptCommand(agent, "planner", promptPath);
-  const cmuxAvailable = commandExists("cmux");
-  const inCmux = Boolean(currentCmuxWorkspace());
-
-  if (dryRun) {
-    console.log("# ai-flow go");
-    console.log("");
-    console.log(`Agent: ${agent}`);
-    console.log(`Prompt: ${relative(process.cwd(), promptPath)}`);
-    console.log(`cmux: ${cmuxAvailable ? "available" : "missing"}`);
-    console.log(`inside cmux: ${inCmux ? "yes" : "no"}`);
-    console.log("");
-    console.log("## Planner command");
-    console.log(codeBlock(launchCommand));
-    return;
+  console.log("Installed ai-flow validation instructions.");
+  console.log(`- ${FLOW_DIR}/${AGENT_SNIPPET_FILE}`);
+  if (applyAgentDocs) {
+    console.log("- Updated AGENTS.md / CLAUDE.md validation snippets where available.");
+  } else {
+    console.log(`Next: add ${FLOW_DIR}/${AGENT_SNIPPET_FILE} to your agent instructions if desired.`);
   }
-
-  if (!noCmux && cmuxAvailable && !inCmux) {
-    const workspace = openPlannerInCmux(launchCommand);
-    if (workspace) {
-      appendToState(
-        `\n## Planner Boot ${timestampForFile()}\n\n- Agent: ${agent}\n- Prompt: ${relative(process.cwd(), promptPath)}\n- cmux workspace: ${workspace}\n`,
-      );
-      console.log(`Opened Planner in cmux workspace ${workspace}.`);
-      return;
-    }
-    console.log("cmux is installed, but ai-flow could not create a workspace. Starting Planner in this terminal instead.");
-  }
-
-  appendToState(
-    `\n## Planner Boot ${timestampForFile()}\n\n- Agent: ${agent}\n- Prompt: ${relative(process.cwd(), promptPath)}\n- cmux workspace: ${inCmux ? currentCmuxWorkspace() : "none"}\n`,
-  );
-  runInteractiveShell(launchCommand);
 }
 
-function startSession(args: string[]): void {
-  const [roleArg = "planner", ...rest] = args;
-  const role = parseSessionRole(roleArg);
+function runCheck(args: string[]): void {
+  if (args.includes("--help") || args.includes("-h")) {
+    printCheckHelp();
+    return;
+  }
   if (!existsSync(join(process.cwd(), FLOW_DIR, CONFIG_FILE))) {
     initFlow(["--quiet"]);
-    writeRoleFiles(false);
   }
 
-  const agent = parseAgent(readOption(rest, "--agent") ?? loadConfig().defaultAgent);
-  const taskId = readOption(rest, "--task");
-  const save = !rest.includes("--no-save");
-  const brief = role === "planner"
-    ? plannerBrief({ agent })
-    : buildPrompt({ agent, role, taskId, save: false });
+  const config = loadConfig();
+  const separator = args.indexOf("--");
+  const commandArgs = separator >= 0 ? args.slice(separator + 1) : [];
+  const optionArgs = separator >= 0 ? args.slice(0, separator) : args;
+  const noVerify = optionArgs.includes("--no-verify");
+  const noDiff = optionArgs.includes("--no-diff");
+  const openInBrowser = optionArgs.includes("--open");
+  const includeUntracked = optionArgs.includes("--include-untracked") || config.diff.includeUntracked;
+  const staged = optionArgs.includes("--staged");
+  const base = readOption(optionArgs, "--base");
+  const contextValue = readOption(optionArgs, "--context");
+  const context = contextValue ? parsePositiveInteger(contextValue, "--context") : config.diff.context;
 
-  if (save) {
-    const promptPath = join(
-      process.cwd(),
-      FLOW_DIR,
-      "prompts",
-      `${timestampForFile()}-${role}-${agent}.md`,
-    );
-    writeFileSync(promptPath, brief);
+  const verification = noVerify
+    ? { commands: [], failed: false, skipped: true } satisfies VerificationRun
+    : executeVerification(commandArgs.join(" "));
+
+  let review: DiffReviewResult | undefined;
+  if (!noDiff) {
+    review = createDiffReview({
+      base,
+      staged,
+      includeUntracked,
+      context,
+      output: join(process.cwd(), FLOW_DIR, "diffs", `${timestampForFile()}-check.html`),
+      title: "ai-flow validation diff",
+    });
+    if (openInBrowser) {
+      spawnSync("open", [review.path], { stdio: "ignore" });
+    }
   }
 
-  console.log(brief);
-}
-
-function finishSession(args: string[]): void {
-  const [roleArg = "worker", ...rest] = args;
-  const role = parseSessionRole(roleArg);
-  ensureInitialized();
-  const taskId = readOption(rest, "--task") ?? currentTaskId();
-  const file = readOption(rest, "--file");
-  const complete = rest.includes("--complete");
-  const openDiff = role === "worker" && !rest.includes("--no-diff");
-  const body = file ? readFileSync(file, "utf8") : readStdin();
-  if (body.trim().length === 0) {
-    throw new Error("No finish report provided. Pass --file or pipe report text on stdin.");
+  const reportPath = writeCheckReport({ verification, review });
+  console.log("# ai-flow check");
+  console.log(`Verification: ${verification.skipped ? "skipped" : verification.failed ? "failed" : "passed"}`);
+  if (verification.logPath) {
+    console.log(`Log: ${relative(process.cwd(), verification.logPath)}`);
   }
-
-  const timestamp = timestampForFile();
-  const reportPath = saveReport(role, taskId, body, timestamp);
-  if (complete) {
-    markTaskComplete(taskId);
+  if (review) {
+    console.log(`Diff review: ${relative(process.cwd(), review.path)}`);
+    console.log(`Files: ${review.files}`);
+    console.log(`Hunks: ${review.hunks}`);
   }
-  appendToState(
-    `\n## ${capitalize(role)} Finish ${timestamp} (${taskId})\n\n${summarizeForState(body)}\n`,
-  );
-  console.log(`Recorded ${relative(process.cwd(), reportPath)}`);
-  if (complete) {
-    console.log(`Marked ${taskId} complete.`);
-  }
-  if (openDiff) {
-    openDiffReviewAfterWorker(taskId);
+  console.log(`Report: ${relative(process.cwd(), reportPath)}`);
+  if (verification.failed) {
+    process.exit(1);
   }
 }
 
-function dispatchSession(args: string[]): void {
-  ensureInitialized();
-  const [roleArg = "worker", ...rest] = args;
-  const role = parseRole(roleArg);
-  const agent = parseAgent(readOption(rest, "--agent") ?? loadConfig().defaultAgent);
-  if (agent === "manual") {
-    throw new Error("Use --agent codex or --agent claude with dispatch.");
+function runVerification(args: string[]): void {
+  const separator = args.indexOf("--");
+  const explicitCommand = separator >= 0 ? args.slice(separator + 1).join(" ") : "";
+  const result = executeVerification(explicitCommand, { requireCommands: true });
+  if (result.logPath) {
+    console.log(`Verification log: ${relative(process.cwd(), result.logPath)}`);
   }
-
-  const taskId = readOption(rest, "--task");
-  const dryRun = rest.includes("--dry-run");
-  const noCmux = rest.includes("--no-cmux");
-  const tasks = parseTasks(readFlowFile(TASKS_FILE));
-  const task = selectTask(tasks, taskId);
-  const prompt = buildPrompt({ agent, role, taskId: task.id, save: false });
-  const promptPath = savePrompt(role, task.id, agent, prompt);
-  const launchCommand = buildAgentReadPromptCommand(agent, role, promptPath);
-
-  if (dryRun || noCmux) {
-    console.log(`# ai-flow dispatch ${role} (${task.id})`);
-    console.log("");
-    console.log(`Prompt: ${relative(process.cwd(), promptPath)}`);
-    console.log("");
-    console.log("## Agent command");
-    console.log(codeBlock(launchCommand));
-    console.log("");
-    console.log("## cmux behavior");
-    console.log("When cmux is available, ai-flow creates a right-side terminal pane and sends that command there.");
-    return;
+  if (result.failed) {
+    console.error("Verification failed.");
+    process.exit(1);
   }
-
-  const result = dispatchToCmux(launchCommand, role, task.id);
-  appendToState(
-    `\n## Dispatch ${timestampForFile()} (${task.id})\n\n- Role: ${role}\n- Agent: ${agent}\n- Prompt: ${relative(process.cwd(), promptPath)}\n- cmux workspace: ${result.workspace}\n- cmux surface: ${result.surface}\n`,
-  );
-  console.log(`Dispatched ${role} ${task.id} to cmux ${result.surface}.`);
-  console.log(`Prompt: ${relative(process.cwd(), promptPath)}`);
-}
-
-function printDoctor(): void {
-  const cmux = commandExists("cmux");
-  const codex = commandExists("codex");
-  const claude = commandExists("claude");
-  const inCmux = Boolean(process.env.CMUX_WORKSPACE_ID || process.env.CMUX_SURFACE_ID);
-
-  console.log("# ai-flow doctor");
-  console.log("");
-  console.log(`cmux: ${cmux ? "found" : "missing"}`);
-  console.log(`inside cmux workspace: ${inCmux ? "yes" : "no"}`);
-  console.log(`codex CLI: ${codex ? "found" : "missing"}`);
-  console.log(`claude CLI: ${claude ? "found" : "missing"}`);
-  console.log("");
-
-  if (!cmux) {
-    console.log("Next: install cmux from https://cmux.com/ or with Homebrew:");
-    console.log(codeBlock("brew tap manaflow-ai/cmux\nbrew install --cask cmux"));
-  } else if (!inCmux) {
-    console.log("Next: open this repository in cmux, start one Planner agent session there, then tell it what you want built.");
-  } else if (!codex && !claude) {
-    console.log("Next: install either Codex CLI or Claude Code so Planner can dispatch Worker sessions.");
-  } else {
-    console.log("Ready: tell the current agent to use Planner mode. The Planner can dispatch Worker/Reviewer sessions for you.");
-  }
+  console.log("Verification passed.");
 }
 
 function renderDiffReview(args: string[]): void {
@@ -446,18 +298,17 @@ function renderDiffReview(args: string[]): void {
     printDiffHelp();
     return;
   }
-
   if (!existsSync(join(process.cwd(), FLOW_DIR, CONFIG_FILE))) {
     initFlow(["--quiet"]);
   }
 
+  const config = loadConfig();
   const contextValue = readOption(args, "--context");
-  const context = contextValue ? parsePositiveInteger(contextValue, "--context") : 12;
+  const context = contextValue ? parsePositiveInteger(contextValue, "--context") : config.diff.context;
   const base = readOption(args, "--base");
   const staged = args.includes("--staged");
-  const includeUntracked = args.includes("--include-untracked");
+  const includeUntracked = args.includes("--include-untracked") || config.diff.includeUntracked;
   const openInBrowser = args.includes("--open");
-  const openInCmux = args.includes("--cmux");
   const watch = args.includes("--watch");
 
   if (watch) {
@@ -467,7 +318,6 @@ function renderDiffReview(args: string[]): void {
       includeUntracked,
       context,
       openInBrowser,
-      openInCmux,
       port: readOption(args, "--port"),
     });
     return;
@@ -484,9 +334,6 @@ function renderDiffReview(args: string[]): void {
     title: "ai-flow diff review",
   });
 
-  if (openInCmux) {
-    openCmuxBrowser(result.url);
-  }
   if (openInBrowser) {
     spawnSync("open", [result.path], { stdio: "ignore" });
   }
@@ -502,16 +349,12 @@ function printStatus(): void {
   ensureInitialized();
   const config = loadConfig();
   const git = readGitSnapshot(process.cwd());
-  const tasks = parseTasks(readFlowFile(TASKS_FILE));
-  const active = tasks.find((task) => !task.done);
-  const completed = tasks.filter((task) => task.done).length;
   const reports = listRecentFiles(join(process.cwd(), FLOW_DIR, "reports"), 5);
+  const logs = listRecentFiles(join(process.cwd(), FLOW_DIR, "logs"), 5);
 
-  console.log(`# ${config.projectName} status`);
+  console.log(`# ${config.projectName} validation status`);
   console.log("");
   console.log(`Branch: ${git.branch || "(unknown)"}`);
-  console.log(`Tasks: ${completed}/${tasks.length} complete`);
-  console.log(`Next task: ${active ? `${active.id} ${active.title}` : "none"}`);
   console.log("");
   console.log("## Git status");
   console.log(git.status || "clean");
@@ -520,63 +363,58 @@ function printStatus(): void {
   console.log(git.diffStat || "no diff");
   console.log("");
   console.log("## Verification commands");
-  for (const command of getVerificationCommands(config)) {
-    console.log(`- ${command}`);
+  const commands = getVerificationCommands(config);
+  if (commands.length === 0) {
+    console.log("none configured");
+  } else {
+    for (const command of commands) {
+      console.log(`- ${command}`);
+    }
   }
   console.log("");
   console.log("## Recent reports");
-  if (reports.length === 0) {
-    console.log("none");
-  } else {
-    for (const report of reports) {
-      console.log(`- ${relative(process.cwd(), report)}`);
-    }
-  }
-}
-
-function printNext(args: string[]): void {
-  ensureInitialized();
-  const agent = parseAgent(readOption(args, "--agent") ?? loadConfig().defaultAgent);
-  const role = parseRole(readOption(args, "--role") ?? "worker");
-  const taskId = readOption(args, "--task");
-  const save = !args.includes("--no-save");
-  const prompt = buildPrompt({ agent, role, taskId, save });
-  console.log(prompt);
-}
-
-function printPromptCommand(args: string[]): void {
-  const [roleArg = "worker", ...rest] = args;
-  const role = parseRole(roleArg);
-  const agent = parseAgent(readOption(rest, "--agent") ?? loadConfig().defaultAgent);
-  const taskId = readOption(rest, "--task");
-  const save = !rest.includes("--no-save");
-  const prompt = buildPrompt({ agent, role, taskId, save });
-  console.log(prompt);
+  console.log(reports.length === 0 ? "none" : reports.map((path) => `- ${relative(process.cwd(), path)}`).join("\n"));
+  console.log("");
+  console.log("## Recent logs");
+  console.log(logs.length === 0 ? "none" : logs.map((path) => `- ${relative(process.cwd(), path)}`).join("\n"));
 }
 
 function recordReport(args: string[]): void {
   ensureInitialized();
   const file = readOption(args, "--file");
-  const taskId = readOption(args, "--task") ?? "unknown-task";
+  const label = readOption(args, "--label") ?? "manual";
   const body = file ? readFileSync(file, "utf8") : readStdin();
   if (body.trim().length === 0) {
     throw new Error("No report content provided. Pass --file or pipe report text on stdin.");
   }
 
   const timestamp = timestampForFile();
-  const reportPath = saveReport("worker", taskId, body, timestamp);
-  appendToState(`\n## Report ${timestamp} (${taskId})\n\n${summarizeForState(body)}\n`);
+  const reportDir = join(process.cwd(), FLOW_DIR, "reports");
+  mkdirSync(reportDir, { recursive: true });
+  const reportPath = join(reportDir, `${timestamp}-${sanitizeFilePart(label)}.md`);
+  writeFileSync(reportPath, [
+    `# AI Flow Report: ${label}`,
+    "",
+    `Recorded: ${new Date().toISOString()}`,
+    "",
+    body.trim(),
+    "",
+  ].join("\n"));
+  appendToState(`\n## Report ${timestamp} (${label})\n\n${summarizeForState(body)}\n`);
   console.log(`Recorded ${relative(process.cwd(), reportPath)}`);
 }
 
-function runVerification(args: string[]): void {
-  ensureInitialized();
-  const separator = args.indexOf("--");
-  const explicitCommand = separator >= 0 ? args.slice(separator + 1).join(" ") : "";
+function executeVerification(explicitCommand = "", options: { requireCommands?: boolean } = {}): VerificationRun {
+  if (!existsSync(join(process.cwd(), FLOW_DIR, CONFIG_FILE))) {
+    initFlow(["--quiet"]);
+  }
   const config = loadConfig();
-  const commands = explicitCommand ? [explicitCommand] : getVerificationCommands(config);
+  const commands = explicitCommand.trim() ? [explicitCommand.trim()] : getVerificationCommands(config);
   if (commands.length === 0) {
-    throw new Error("No verification commands found. Add them to .ai-flow/config.json.");
+    if (options.requireCommands) {
+      throw new Error(`No verification commands found. Add them to ${FLOW_DIR}/${CONFIG_FILE} or pass \`-- <command>\`.`);
+    }
+    return { commands: [], failed: false, skipped: true };
   }
 
   const logPath = join(process.cwd(), FLOW_DIR, "logs", `verify-${timestampForFile()}.log`);
@@ -590,6 +428,7 @@ function runVerification(args: string[]): void {
       shell: true,
       encoding: "utf8",
       env: process.env,
+      maxBuffer: 1024 * 1024 * 100,
     });
     chunks.push(result.stdout ?? "");
     chunks.push(result.stderr ?? "");
@@ -601,616 +440,414 @@ function runVerification(args: string[]): void {
   }
 
   writeFileSync(logPath, chunks.join(""));
-  console.log(`Verification log: ${relative(process.cwd(), logPath)}`);
-  if (failed) {
-    console.error("Verification failed.");
-    process.exit(1);
-  }
-  console.log("Verification passed.");
+  return { commands, failed, skipped: false, logPath };
 }
 
-function runAgent(args: string[]): void {
-  ensureInitialized();
-  const [roleArg = "worker", ...rest] = args;
-  const role = parseRole(roleArg);
-  const agent = parseAgent(readOption(rest, "--agent") ?? loadConfig().defaultAgent);
-  if (agent === "manual") {
-    throw new Error("Use --agent codex or --agent claude with `run`, or use `prompt` for manual copy.");
-  }
+function writeCheckReport(input: {
+  verification: VerificationRun;
+  review?: DiffReviewResult;
+}): string {
+  const timestamp = timestampForFile();
+  const git = readGitSnapshot(process.cwd());
+  const reportDir = join(process.cwd(), FLOW_DIR, "reports");
+  mkdirSync(reportDir, { recursive: true });
+  const reportPath = join(reportDir, `${timestamp}-check.md`);
+  const verificationStatus = input.verification.skipped
+    ? "skipped"
+    : input.verification.failed
+      ? "failed"
+      : "passed";
+  const report = [
+    "# AI Flow Validation Check",
+    "",
+    `Recorded: ${new Date().toISOString()}`,
+    `Branch: ${git.branch || "(unknown)"}`,
+    `Verification: ${verificationStatus}`,
+    input.verification.logPath ? `Log: ${relative(process.cwd(), input.verification.logPath)}` : "",
+    input.review ? `Diff review: ${relative(process.cwd(), input.review.path)}` : "",
+    input.review ? `Changed files: ${input.review.files}` : "",
+    input.review ? `Changed hunks: ${input.review.hunks}` : "",
+    "",
+    "## Commands",
+    input.verification.commands.length === 0
+      ? "- none"
+      : input.verification.commands.map((command) => `- \`${command}\``).join("\n"),
+    "",
+    "## Git Status",
+    codeBlock(git.status || "clean"),
+    "",
+    "## Diff Stat",
+    codeBlock(git.diffStat || "no diff"),
+    "",
+  ].filter((line) => line !== "").join("\n");
+  writeFileSync(reportPath, report);
+  appendToState(`\n## Check ${timestamp}\n\n- Verification: ${verificationStatus}\n${input.review ? `- Diff review: ${relative(process.cwd(), input.review.path)}\n` : ""}`);
+  return reportPath;
+}
 
-  const taskId = readOption(rest, "--task");
-  const dryRun = rest.includes("--dry-run");
-  const nonInteractive = rest.includes("--print") || rest.includes("--non-interactive");
-  const prompt = buildPrompt({ agent, role, taskId, save: true });
-  const launch = buildLaunch(agent, prompt, nonInteractive);
-
-  if (dryRun) {
-    console.log([launch.command, ...launch.args.map(shellQuote)].join(" "));
-    return;
-  }
-
-  const result = spawnSync(launch.command, launch.args, {
-    cwd: process.cwd(),
-    stdio: "inherit",
-    env: process.env,
+function buildDiffReview(input: {
+  base?: string;
+  staged: boolean;
+  includeUntracked: boolean;
+  context: number;
+  title: string;
+  watch?: boolean;
+}): DiffReviewBuild {
+  const diffText = readUnifiedDiff({
+    base: input.base,
+    staged: input.staged,
+    context: input.context,
+    includeUntracked: input.includeUntracked,
   });
-  process.exit(result.status ?? 1);
-}
+  const files = parseUnifiedDiff(diffText);
+  const sourceFiles = collectSourceFiles(files);
+  const hunks = files.reduce((sum, file) => sum + file.hunks.length, 0);
+  const generatedAt = new Date().toISOString();
+  const diffHtml = renderDiff2Html(diffText);
+  const signature = createHash("sha1")
+    .update(diffText)
+    .update("\n")
+    .update(sourceFiles.map((file) => `${file.path}\0${file.size}\0${file.embedded ? file.content : file.skippedReason ?? ""}`).join("\n"))
+    .digest("hex");
+  const html = renderDiffHtml({
+    files,
+    diffHtml,
+    sourceFiles,
+    title: input.title,
+    subtitle: diffSubtitle(input),
+    watch: Boolean(input.watch),
+    signature,
+    generatedAt,
+  });
 
-function buildPrompt(options: {
-  agent: AgentName;
-  role: PromptRole;
-  taskId?: string;
-  save: boolean;
-}): string {
-  ensureInitialized();
-  const root = process.cwd();
-  const config = loadConfig();
-  const git = readGitSnapshot(root);
-  const tasksText = readFlowFile(TASKS_FILE);
-  const tasks = parseTasks(tasksText);
-  const task = selectTask(tasks, options.taskId);
-  const commands = getVerificationCommands(config);
-  const state = readFlowFile(STATE_FILE);
-  const decisions = readFlowFile(DECISIONS_FILE);
-
-  const prompt =
-    options.role === "reviewer"
-      ? reviewerPrompt({ config, git, task, commands, state, decisions })
-      : workerPrompt({ config, git, task, commands, state, decisions, agent: options.agent });
-
-  if (options.save) {
-    savePrompt(options.role, task.id, options.agent, prompt);
-  }
-
-  return prompt;
-}
-
-function workerPrompt(input: {
-  config: FlowConfig;
-  git: GitSnapshot;
-  task: Task;
-  commands: string[];
-  state: string;
-  decisions: string;
-  agent: AgentName;
-}): string {
-  return [
-    `# AI Flow Worker Task (${input.task.id})`,
-    "",
-    "You are the implementation worker for this repository. Complete exactly one slice, verify it, and then stop.",
-    "",
-    "## Task",
-    `${input.task.id}: ${input.task.title}`,
-    "",
-    "## Operating Rules",
-    "- Inspect the relevant code before editing.",
-    "- Do not expand scope beyond this task unless the current code makes that impossible.",
-    "- Prefer existing project patterns over new abstractions.",
-    "- Keep the diff small and reviewable.",
-    "- Run the listed verification commands, or explain precisely why a command cannot run.",
-    "- Finish with the required report format. Do not claim completion without verification evidence.",
-    "",
-    "## Current Repository State",
-    `Project: ${input.config.projectName}`,
-    `Branch: ${input.git.branch || "(unknown)"}`,
-    "",
-    "### Git Status",
-    codeBlock(truncateText(input.git.status || "clean", 5000)),
-    "",
-    "### Diff Stat",
-    codeBlock(truncateText(input.git.diffStat || "no diff", 3500)),
-    "",
-    "## Durable State",
-    truncateMarkdown(input.state, 2400),
-    "",
-    "## Decisions",
-    truncateMarkdown(input.decisions, 1600),
-    "",
-    "## Verification",
-    input.commands.length > 0
-      ? input.commands.map((command) => `- \`${command}\``).join("\n")
-      : "- No commands detected. Identify and run the smallest meaningful validation.",
-    "",
-    "## Required Final Report",
-    "- Changed files",
-    "- Verification commands and results",
-    "- Behavior completed",
-    "- Remaining risks or follow-up tasks",
-    "",
-    "When you record completion with `ai-flow finish worker`, ai-flow creates a visual diff review automatically and opens it in cmux when available.",
-    "",
-  ].join("\n");
-}
-
-function reviewerPrompt(input: {
-  config: FlowConfig;
-  git: GitSnapshot;
-  task: Task;
-  commands: string[];
-  state: string;
-  decisions: string;
-}): string {
-  return [
-    `# AI Flow Reviewer Task (${input.task.id})`,
-    "",
-    "You are the read-focused reviewer. Review the current repository state against the assigned task and report findings first.",
-    "",
-    "## Review Target",
-    `${input.task.id}: ${input.task.title}`,
-    "",
-    "## Rules",
-    "- Do not edit files unless explicitly asked in a later prompt.",
-    "- Prioritize correctness bugs, regressions, missing tests, and scope creep.",
-    "- Ground each finding in a file path and line number when possible.",
-    "- If there are no findings, say that clearly and name the residual risk.",
-    "",
-    "## Current Repository State",
-    `Project: ${input.config.projectName}`,
-    `Branch: ${input.git.branch || "(unknown)"}`,
-    "",
-    "### Git Status",
-    codeBlock(truncateText(input.git.status || "clean", 5000)),
-    "",
-    "### Diff Stat",
-    codeBlock(truncateText(input.git.diffStat || "no diff", 3500)),
-    "",
-    "## Durable State",
-    truncateMarkdown(input.state, 2200),
-    "",
-    "## Decisions",
-    truncateMarkdown(input.decisions, 1400),
-    "",
-    "## Suggested Verification",
-    input.commands.length > 0
-      ? input.commands.map((command) => `- \`${command}\``).join("\n")
-      : "- No commands detected. Suggest targeted validation.",
-    "",
-    "## Required Output",
-    "Findings first, ordered by severity. Then list test gaps and a short summary.",
-    "",
-  ].join("\n");
-}
-
-function plannerBrief(input: { agent: AgentName }): string {
-  ensureInitialized();
-  const config = loadConfig();
-  const git = readGitSnapshot(process.cwd());
-  const tasks = parseTasks(readFlowFile(TASKS_FILE));
-  const active = tasks.find((task) => !task.done);
-  const commands = getVerificationCommands(config);
-  const state = readFlowFile(STATE_FILE);
-  const decisions = readFlowFile(DECISIONS_FILE);
-
-  return [
-    "# AI Flow Planner Session",
-    "",
-    "You are the planning and coordination session for this repository. The user should not need to know or run ai-flow commands.",
-    "",
-    "## Mission",
-    "- Read the repo state, durable state, and current task queue.",
-    "- Decide what is already done, what is risky, and what the next small verifiable slice should be.",
-    "- Update `.ai-flow/tasks.md`, `.ai-flow/state.md`, and `.ai-flow/decisions.md` when needed.",
-    "- Produce a Worker-ready brief with scope, success criteria, and verification commands.",
-    "- When a Worker or Reviewer should run separately, use `ai-flow dispatch worker|reviewer --agent codex|claude` so cmux handles the session split.",
-    "- Do not implement product code unless the user explicitly changes this session into a Worker session.",
-    "",
-    "## Current Repository State",
-    `Project: ${config.projectName}`,
-    `Agent adapter: ${input.agent}`,
-    `Branch: ${git.branch || "(unknown)"}`,
-    `Next task: ${active ? `${active.id} ${active.title}` : "none"}`,
-    "",
-    "### Git Status",
-    codeBlock(truncateText(git.status || "clean", 5000)),
-    "",
-    "### Diff Stat",
-    codeBlock(truncateText(git.diffStat || "no diff", 3500)),
-    "",
-    "## Durable State",
-    truncateMarkdown(state, 2600),
-    "",
-    "## Decisions",
-    truncateMarkdown(decisions, 1600),
-    "",
-    "## Verification Available",
-    commands.length > 0
-      ? commands.map((command) => `- \`${command}\``).join("\n")
-      : "- No root verification detected. Infer scoped validation from the touched subproject.",
-    "",
-    "## Required Planner Output",
-    "- Current state in 3-7 bullets",
-    "- Next Worker slice with a task id",
-    "- Scope boundaries and files/areas to inspect",
-    "- Acceptance criteria",
-    "- Verification commands",
-    "- Any risks or user decisions needed",
-    "",
-    "## Cleanup",
-    "Before ending, write a short planner report and record it with `ai-flow finish planner --file <report-file>`.",
-    "",
-  ].join("\n");
-}
-
-function plannerBootPrompt(input: {
-  agent: AgentName;
-  objective: string;
-  autoDispatch: boolean;
-}): string {
-  ensureInitialized();
-  const config = loadConfig();
-  const git = readGitSnapshot(process.cwd());
-  const tasks = parseTasks(readFlowFile(TASKS_FILE));
-  const active = tasks.find((task) => !task.done);
-  const commands = getVerificationCommands(config);
-  const state = readFlowFile(STATE_FILE);
-  const decisions = readFlowFile(DECISIONS_FILE);
-  const objective = input.objective.trim();
-  return [
-    "# AI Flow Planner Boot",
-    "",
-    "You are already in Planner mode. The user should not need to type an activation phrase or know cmux.",
-    "",
-    "## User-Facing Behavior",
-    "- Do not print a formal `Planner Brief` unless the user explicitly asks for one.",
-    "- Do not dump old `.ai-flow` progress on first contact. Treat it as private context.",
-    "- If no user objective is provided, ask one concise question: what should we build or fix?",
-    "- If there is existing `.ai-flow` progress and no objective, mention only that you can either resume existing work or start fresh. Do not list old tasks unless asked.",
-    "- If a user objective is provided, create/update small verifiable tasks and start orchestration immediately.",
-    input.autoDispatch
-      ? `- When the first Worker slice is clear and no user decision is needed, immediately run \`ai-flow dispatch worker --agent ${input.agent} --task <task-id>\`; do not ask for confirmation just to create the Worker pane.`
-      : "- Auto-dispatch is disabled. Prepare the first Worker slice, then wait for the user.",
-    "- For active review while edits may still change, open `ai-flow diff --watch --cmux`; inspect changed hunks with F7 / Shift+F7.",
-    "- In the diff review, use Shift Shift to search all indexed files, including unchanged files. Use Cmd/Ctrl+E for recent files.",
-    "- Keep your visible response short: current action, Worker status if dispatched, and any question that genuinely blocks progress.",
-    "",
-    "## User Objective",
-    objective || "(none provided yet)",
-    "",
-    "## Private Repository Context",
-    `Project: ${config.projectName}`,
-    `Agent adapter: ${input.agent}`,
-    `Branch: ${git.branch || "(unknown)"}`,
-    `Active task: ${active ? `${active.id} ${active.title}` : "none"}`,
-    "",
-    "### Git Status",
-    codeBlock(truncateText(git.status || "clean", 5000)),
-    "",
-    "### Diff Stat",
-    codeBlock(truncateText(git.diffStat || "no diff", 3500)),
-    "",
-    "### Durable State",
-    truncateMarkdown(state, 2200),
-    "",
-    "### Decisions",
-    truncateMarkdown(decisions, 1400),
-    "",
-    "### Verification Available",
-    commands.length > 0
-      ? commands.map((command) => `- \`${command}\``).join("\n")
-      : "- No root verification detected. Infer scoped validation from the touched subproject.",
-    "",
-  ].join("\n");
-}
-
-function writeRoleFiles(force: boolean): void {
-  const rolesPath = join(process.cwd(), FLOW_DIR, ROLES_DIR);
-  mkdirSync(rolesPath, { recursive: true });
-  writeIfMissing(join(rolesPath, "planner.md"), plannerRoleDoc(), force);
-  writeIfMissing(join(rolesPath, "worker.md"), workerRoleDoc(), force);
-  writeIfMissing(join(rolesPath, "reviewer.md"), reviewerRoleDoc(), force);
-}
-
-function plannerRoleDoc(): string {
-  return [
-    "# ai-flow Planner Role",
-    "",
-    "When the user says this is a Planner session, run the lifecycle yourself. Do not ask the user to run CLI commands.",
-    "",
-    "## Start",
-    "Run:",
-    "",
-    "```bash",
-    "ai-flow start planner",
-    "```",
-    "",
-    "If `.ai-flow/` is missing, `start` initializes it.",
-    "",
-    "## Work",
-    "- Inspect the current repo state and relevant code.",
-    "- Update `.ai-flow/tasks.md`, `.ai-flow/state.md`, and `.ai-flow/decisions.md` as needed.",
-    "- Keep tasks small, verifiable, and suitable for one Worker session.",
-    "- Define acceptance criteria and validation commands.",
-    "- If cmux is available, dispatch Workers and Reviewers with `ai-flow dispatch worker|reviewer --agent codex|claude`; do not make the user create panes manually.",
-    "- For live review while edits may still change, open `ai-flow diff --watch --cmux`. Use F7/Shift+F7 to move by changed hunk, not just by file.",
-    "- Use Shift Shift in the diff review to search all indexed files, including unchanged files. Use Cmd/Ctrl+E for recent files.",
-    "- Do not edit product code unless the user explicitly changes this session into a Worker session.",
-    "",
-    "## Finish",
-    "Write a short report and record it:",
-    "",
-    "```bash",
-    "ai-flow finish planner --file <report-file>",
-    "```",
-    "",
-  ].join("\n");
-}
-
-function workerRoleDoc(): string {
-  return [
-    "# ai-flow Worker Role",
-    "",
-    "When the user says this is a Worker session, run the lifecycle yourself. Do not ask the user to run CLI commands.",
-    "",
-    "## Start",
-    "Run:",
-    "",
-    "```bash",
-    "ai-flow start worker",
-    "```",
-    "",
-    "## Work",
-    "- Complete exactly one task slice.",
-    "- Inspect the code before editing.",
-    "- Keep the diff small and scoped.",
-    "- Run the requested verification plus any subproject-specific checks.",
-    "- Do not claim completion without verification evidence.",
-    "",
-    "## Finish",
-    "Write a report with changed files, verification, completed behavior, and remaining risks. Then run:",
-    "",
-    "```bash",
-    "ai-flow finish worker --task <task-id> --file <report-file> --complete",
-    "```",
-    "",
-    "This automatically creates a visual diff review and opens it in cmux when available. Pass `--no-diff` only when the Planner explicitly does not need a visual review.",
-    "",
-    "Omit `--complete` if the task is not actually complete.",
-    "",
-  ].join("\n");
-}
-
-function reviewerRoleDoc(): string {
-  return [
-    "# ai-flow Reviewer Role",
-    "",
-    "When the user says this is a Reviewer session, run the lifecycle yourself. Do not ask the user to run CLI commands.",
-    "",
-    "## Start",
-    "Run:",
-    "",
-    "```bash",
-    "ai-flow start reviewer",
-    "```",
-    "",
-    "## Work",
-    "- Stay read-focused unless the user explicitly asks for fixes.",
-    "- Review the current diff against `.ai-flow/tasks.md`, `.ai-flow/state.md`, and `.ai-flow/decisions.md`.",
-    "- Prefer `ai-flow diff --watch --cmux` for live visual review. Use F7 for the next changed hunk and Shift+F7 for the previous changed hunk.",
-    "- Use Shift Shift in the diff review to search all indexed files, including unchanged files. Use Cmd/Ctrl+E for recent files.",
-    "- Findings first, ordered by severity.",
-    "- Identify missing tests, scope creep, and risky assumptions.",
-    "",
-    "## Finish",
-    "Write a review report and record it:",
-    "",
-    "```bash",
-    "ai-flow finish reviewer --task <task-id> --file <report-file>",
-    "```",
-    "",
-  ].join("\n");
-}
-
-function agentSnippet(): string {
-  return [
-    "<!-- AI-FLOW:START -->",
-    "## ai-flow Role Sessions",
-    "",
-    "This repository uses ai-flow for role-based AI coding sessions.",
-    "",
-    "When the user says the session is `Planner`, `Worker`, or `Reviewer`, do not ask the user to run ai-flow commands. Run the matching lifecycle yourself:",
-    "",
-    "- Planner: read `.ai-flow/roles/planner.md`, then run `ai-flow start planner`.",
-    "- Worker: read `.ai-flow/roles/worker.md`, then run `ai-flow start worker`.",
-    "- Reviewer: read `.ai-flow/roles/reviewer.md`, then run `ai-flow start reviewer`.",
-    "",
-    "The normal user experience is: the user talks only to Planner. Planner uses `.ai-flow/cmux.md` and `ai-flow dispatch worker|reviewer --agent codex|claude` to create separate cmux sessions when available.",
-    "For live review, use `ai-flow diff --watch --cmux`; use F7 for next changed hunk, Shift+F7 for previous changed hunk, Shift Shift for file search, and Cmd/Ctrl+E for recent files.",
-    "",
-    "At the end of the session, write a concise report and record it with `ai-flow finish <role> --file <report-file>`. Workers should pass `--complete` only after verification succeeds.",
-    "",
-    "The user-facing contract is role selection and review of results; CLI details are agent-internal.",
-    "<!-- AI-FLOW:END -->",
-    "",
-  ].join("\n");
-}
-
-function cmuxGuide(): string {
-  return [
-    "# ai-flow cmux Guide",
-    "",
-    "This file is for agents, not end users.",
-    "",
-    "## User Experience",
-    "- The user should only talk to the Planner session.",
-    "- The user should not need to know cmux panes, surfaces, sockets, or ai-flow commands.",
-    "- Planner is responsible for splitting work into small verified slices and dispatching Worker or Reviewer sessions.",
-    "",
-    "## Planner Dispatch",
-    "Use:",
-    "",
-    "```bash",
-    "ai-flow dispatch worker --agent codex --task <task-id>",
-    "ai-flow dispatch reviewer --agent codex --task <task-id>",
-    "ai-flow diff --watch --cmux",
-    "```",
-    "",
-    "Use `--agent claude` when Claude Code is the preferred worker.",
-    "",
-    "## cmux Safety Rules",
-    "- Prefer the current cmux workspace from `CMUX_WORKSPACE_ID`.",
-    "- Do not change focus, switch workspaces, or close panes unless the user explicitly asks.",
-    "- Dispatch should create or use helper terminal space without requiring the user to manage panes.",
-    "- Use `ai-flow diff --watch --cmux` for a live review pane while edits may still change.",
-    "- Navigate changed hunks with F7 / Shift+F7. The sidebar groups files as a folder tree.",
-    "- Use Shift Shift in the diff review to search all indexed files, including unchanged files. Use Cmd/Ctrl+E for recent files.",
-    "- If cmux is missing, run `ai-flow doctor` and explain the one missing setup step in plain language.",
-    "",
-    "## Completion Contract",
-    "- Worker sessions must run scoped verification before `ai-flow finish worker --complete`.",
-    "- Reviewer sessions stay read-focused and report findings first.",
-    "- Planner reads reports and decides whether the slice is accepted, needs another Worker pass, or needs user input.",
-    "",
-  ].join("\n");
-}
-
-function applyAgentDocSnippet(fileName: string): void {
-  const path = join(process.cwd(), fileName);
-  const snippet = agentSnippet();
-  if (!existsSync(path)) {
-    writeFileSync(path, `# ${fileName}\n\n${snippet}`);
-    return;
-  }
-
-  const current = readFileSync(path, "utf8");
-  const markerPattern = /<!-- AI-FLOW:START -->[\s\S]*?<!-- AI-FLOW:END -->\n?/;
-  const next = markerPattern.test(current)
-    ? current.replace(markerPattern, snippet)
-    : `${current.trimEnd()}\n\n${snippet}`;
-  writeFileSync(path, next);
-}
-
-function buildLaunch(
-  agent: Exclude<AgentName, "manual">,
-  prompt: string,
-  nonInteractive: boolean,
-): { command: string; args: string[] } {
-  if (agent === "codex") {
-    return nonInteractive
-      ? { command: "codex", args: ["exec", "--cd", process.cwd(), prompt] }
-      : { command: "codex", args: ["--cd", process.cwd(), prompt] };
-  }
-
-  return nonInteractive
-    ? { command: "claude", args: ["-p", prompt] }
-    : { command: "claude", args: [prompt] };
-}
-
-function ensureInitialized(): void {
-  if (!existsSync(join(process.cwd(), FLOW_DIR, CONFIG_FILE))) {
-    throw new Error(`Missing ${FLOW_DIR}/. Run \`ai-flow init\` first.`);
-  }
-}
-
-function loadConfig(): FlowConfig {
-  ensureInitialized();
-  return JSON.parse(readFlowFile(CONFIG_FILE)) as FlowConfig;
-}
-
-function getVerificationCommands(config: FlowConfig): string[] {
-  return config.verification.commands.filter((command) => command.trim().length > 0);
-}
-
-function readFlowFile(name: string): string {
-  return readFileSync(join(process.cwd(), FLOW_DIR, name), "utf8");
-}
-
-function writeIfMissing(path: string, content: string, force: boolean): void {
-  if (!force && existsSync(path)) {
-    return;
-  }
-  writeFileSync(path, content);
-}
-
-function ensureAiFlowGitignore(root: string): boolean {
-  if (git(root, ["rev-parse", "--is-inside-work-tree"]) !== "true") {
-    return false;
-  }
-
-  const path = join(root, GITIGNORE_FILE);
-  const content = existsSync(path) ? readFileSync(path, "utf8") : "";
-  const hasEntry = content
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .some((line) => line === FLOW_DIR || line === `${FLOW_DIR}/`);
-  if (hasEntry) {
-    return false;
-  }
-
-  const prefix = content.length === 0
-    ? ""
-    : content.endsWith("\n")
-      ? "\n"
-      : "\n\n";
-  writeFileSync(
-    path,
-    `${content}${prefix}# ai-flow local orchestration state\n${FLOW_DIR}/\n`,
-  );
-  return true;
-}
-
-function initialState(config: FlowConfig): string {
-  return [
-    "# AI Flow State",
-    "",
-    `Project: ${config.projectName}`,
-    `Initialized: ${new Date().toISOString()}`,
-    "",
-    "## Goal",
-    "- Define the current outcome in one or two sentences.",
-    "",
-    "## Current Status",
-    "- Initialized ai-flow.",
-    "",
-    "## Completed",
-    "",
-    "## Active",
-    "",
-    "## Known Risks",
-    "",
-    "## Reports",
-    "",
-  ].join("\n");
-}
-
-function initialTasks(): string {
-  return [
-    "# AI Flow Tasks",
-    "",
-    "Use one checkbox per small vertical slice. Keep each task verifiable.",
-    "",
-    "- [ ] T001: Define the first implementation slice.",
-    "",
-  ].join("\n");
-}
-
-function initialDecisions(): string {
-  return [
-    "# AI Flow Decisions",
-    "",
-    "Record durable project decisions here so new sessions do not depend on chat memory.",
-    "",
-  ].join("\n");
-}
-
-function readGitSnapshot(root: string): GitSnapshot {
   return {
-    branch: git(root, ["branch", "--show-current"]),
-    status: git(root, ["status", "--short"]),
-    diffStat: git(root, ["diff", "--stat"]),
-    recentCommits: git(root, ["log", "--oneline", "-5"]),
+    html,
+    files: files.length,
+    hunks,
+    signature,
+    generatedAt,
   };
 }
 
-function git(root: string, args: string[]): string {
-  const result = spawnSync("git", args, {
-    cwd: root,
-    encoding: "utf8",
-  });
-  if (result.status !== 0) {
+function renderDiff2Html(diffText: string): string {
+  if (diffText.trim().length === 0) {
     return "";
   }
-  return (result.stdout ?? "").trim();
+
+  return renderDiff2HtmlMarkup(diffText, {
+    outputFormat: "side-by-side",
+    drawFileList: false,
+    matching: "lines",
+  });
+}
+
+function createDiffReview(input: {
+  base?: string;
+  staged: boolean;
+  includeUntracked: boolean;
+  context: number;
+  output: string;
+  title: string;
+}): DiffReviewResult {
+  const outputPath = resolve(input.output);
+  const build = buildDiffReview({
+    base: input.base,
+    staged: input.staged,
+    includeUntracked: input.includeUntracked,
+    context: input.context,
+    title: input.title,
+  });
+
+  mkdirSync(dirname(outputPath), { recursive: true });
+  writeFileSync(outputPath, build.html);
+  return {
+    path: outputPath,
+    url: pathToFileURL(outputPath).href,
+    files: build.files,
+    hunks: build.hunks,
+  };
+}
+
+function serveDiffWatch(input: {
+  base?: string;
+  staged: boolean;
+  includeUntracked: boolean;
+  context: number;
+  openInBrowser: boolean;
+  port?: string;
+}): void {
+  const host = "127.0.0.1";
+  const port = input.port ? parsePositiveInteger(input.port, "--port") : 0;
+  const build = () => buildDiffReview({
+    base: input.base,
+    staged: input.staged,
+    includeUntracked: input.includeUntracked,
+    context: input.context,
+    title: "ai-flow live diff",
+    watch: true,
+  });
+
+  const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+    const requestUrl = new URL(request.url ?? "/", `http://${host}`);
+    try {
+      if (requestUrl.pathname === "/__ai_flow_state") {
+        const latest = build();
+        writeHttpJson(response, {
+          signature: latest.signature,
+          generatedAt: latest.generatedAt,
+          files: latest.files,
+          hunks: latest.hunks,
+        });
+        return;
+      }
+
+      if (requestUrl.pathname === "/" || requestUrl.pathname === "/review") {
+        const latest = build();
+        writeHttp(response, 200, "text/html; charset=utf-8", latest.html);
+        return;
+      }
+
+      writeHttp(response, 404, "text/plain; charset=utf-8", "Not found\n");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      writeHttp(response, 500, "text/plain; charset=utf-8", `${message}\n`);
+    }
+  });
+
+  server.on("error", (error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`ai-flow: diff watch server failed: ${message}`);
+    process.exit(1);
+  });
+
+  server.listen(port, host, () => {
+    const address = server.address();
+    const actualPort = typeof address === "object" && address ? address.port : port;
+    const url = `http://${host}:${actualPort}/review`;
+    console.log(`Live diff review: ${url}`);
+    console.log("Watching working tree. Press Ctrl+C to stop.");
+    if (input.openInBrowser) {
+      spawnSync("open", [url], { stdio: "ignore" });
+    }
+  });
+}
+
+function renderDiffHtml(input: {
+  files: DiffFile[];
+  diffHtml: string;
+  sourceFiles: SourceFile[];
+  title: string;
+  subtitle: string;
+  watch?: boolean;
+  signature?: string;
+  generatedAt?: string;
+}): string {
+  const totalHunks = input.files.reduce((sum, file) => sum + file.hunks.length, 0);
+  const totalLines = input.files.reduce(
+    (sum, file) => sum + file.hunks.reduce((inner, hunk) => inner + hunk.lines.length, 0),
+    0,
+  );
+  const fileNav = renderDiffTree(input.files);
+  const sourceNav = renderSourceTree(input.sourceFiles);
+  const embeddedFiles = input.sourceFiles.filter((file) => file.embedded).length;
+
+  return [
+    "<!doctype html>",
+    '<html lang="en">',
+    "<head>",
+    '<meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1">',
+    '<link rel="icon" href="data:,">',
+    `<title>${escapeHtml(input.title)}</title>`,
+    "<style>",
+    diff2HtmlCss(),
+    diffCss(),
+    "</style>",
+    "</head>",
+    "<body>",
+    '<aside class="sidebar">',
+    '<div class="brand">ai-flow validate</div>',
+    `<div class="summary">${input.files.length} changed | ${totalHunks} hunks | ${embeddedFiles}/${input.sourceFiles.length} files searchable</div>`,
+    `<div class="live-status ${input.watch ? "watching" : ""}" id="live-status">${input.watch ? "Live: watching for changes" : `Generated: ${escapeHtml(input.generatedAt ?? new Date().toISOString())}`}</div>`,
+    '<label class="search"><span>Search</span><input id="review-search" type="search" placeholder="Path or file content"></label>',
+    '<div class="tabs"><button type="button" class="tab active" data-tab="changes">Changes</button><button type="button" class="tab" data-tab="files">Files</button></div>',
+    '<div class="keymap"><kbd>F7</kbd> next hunk<br><kbd>Shift</kbd>+<kbd>F7</kbd> previous<br><kbd>Shift</kbd><kbd>Shift</kbd> search files<br><kbd>Cmd</kbd>+<kbd>E</kbd> recent files</div>',
+    `<div class="tab-panel" id="changes-panel">${fileNav}</div>`,
+    `<div class="tab-panel hidden" id="files-panel">${sourceNav}</div>`,
+    "</aside>",
+    '<main class="content">',
+    '<section id="diff-view">',
+    '<div class="toolbar">',
+    `<div><h1>${escapeHtml(input.title)}</h1><p>${escapeHtml(input.subtitle)}; ${escapeHtml(String(totalLines))} diff lines</p></div>`,
+    `<div class="counter"><span id="hunk-counter">0</span> / ${totalHunks}</div>`,
+    "</div>",
+    `<div id="diff2html-container" class="diff2html-container">${input.diffHtml || '<div class="empty">No diff to review.</div>'}</div>`,
+    "</section>",
+    '<section id="source-viewer" class="source-viewer hidden">',
+    '<div class="toolbar source-toolbar">',
+    '<div><h1 id="source-title">Source</h1><p id="source-meta">Select a file from the Files tab.</p></div>',
+    '<button type="button" id="back-to-diff" class="plain-button">Back to diff</button>',
+    "</div>",
+    '<div id="source-body" class="source-body empty">Select a file from the Files tab.</div>',
+    "</section>",
+    "</main>",
+    '<div id="quick-open" class="quick-open hidden" role="dialog" aria-modal="true" aria-label="Quick open">',
+    '<div class="quick-open-panel">',
+    '<div class="quick-open-title"><span id="quick-open-mode">Search files</span><span class="quick-open-hint">Up Down Enter Esc</span></div>',
+    '<input id="quick-open-input" type="search" autocomplete="off" spellcheck="false" placeholder="Search files">',
+    '<div id="quick-open-results" class="quick-open-results"></div>',
+    "</div>",
+    "</div>",
+    `<script type="application/json" id="review-meta" data-watch="${input.watch ? "true" : "false"}" data-signature="${escapeAttr(input.signature ?? "")}" data-generated-at="${escapeAttr(input.generatedAt ?? "")}">{}</script>`,
+    `<script type="application/json" id="source-files-data">${jsonForScript(input.sourceFiles)}</script>`,
+    "<script>",
+    diffScript(),
+    "</script>",
+    "</body>",
+    "</html>",
+  ].join("\n");
+}
+
+function renderDiffTree(files: DiffFile[]): string {
+  if (files.length === 0) {
+    return '<div class="empty-nav">No changed files</div>';
+  }
+
+  const root: DiffTreeNode = { name: "", path: "", children: new Map() };
+  let hunkIndex = 0;
+
+  files.forEach((file, fileIndex) => {
+    const parts = file.displayPath.split("/").filter(Boolean);
+    let node = root;
+    let currentPath = "";
+    for (const part of parts.slice(0, -1)) {
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      let child = node.children.get(part);
+      if (!child) {
+        child = { name: part, path: currentPath, children: new Map() };
+        node.children.set(part, child);
+      }
+      node = child;
+    }
+
+    const leafName = parts[parts.length - 1] ?? file.displayPath;
+    const firstHunk = hunkIndex;
+    hunkIndex += file.hunks.length;
+    node.children.set(`${leafName}\0${fileIndex}`, {
+      name: leafName,
+      path: file.displayPath,
+      children: new Map(),
+      file: {
+        index: fileIndex,
+        firstHunk,
+        hunkCount: file.hunks.length,
+        status: file.status,
+        displayPath: file.displayPath,
+      },
+    });
+  });
+
+  return `<nav class="tree">${renderTreeChildren(root, 0)}</nav>`;
+}
+
+function renderTreeChildren(node: DiffTreeNode, depth: number): string {
+  return Array.from(node.children.values())
+    .sort((a, b) => {
+      if (Boolean(a.file) !== Boolean(b.file)) {
+        return a.file ? 1 : -1;
+      }
+      return a.name.localeCompare(b.name);
+    })
+    .map((child) => renderTreeNode(child, depth))
+    .join("\n");
+}
+
+function renderTreeNode(node: DiffTreeNode, depth: number): string {
+  if (node.file) {
+    const file = node.file;
+    return [
+      `<a class="file-link tree-file" href="#file-${file.index}" data-hunk="${file.firstHunk}" data-file="${escapeAttr(file.displayPath)}" style="--depth:${depth}">`,
+      `<span class="status status-${escapeAttr(file.status)}">${escapeHtml(file.status)}</span>`,
+      `<span class="path" title="${escapeAttr(file.displayPath)}">${escapeHtml(node.name)}</span>`,
+      `<span class="count">${file.hunkCount}</span>`,
+      "</a>",
+    ].join("");
+  }
+
+  return [
+    `<details class="tree-dir" open style="--depth:${depth}">`,
+    `<summary><span class="folder-icon">v</span><span class="path">${escapeHtml(node.name)}</span></summary>`,
+    renderTreeChildren(node, depth + 1),
+    "</details>",
+  ].join("\n");
+}
+
+function renderSourceTree(files: SourceFile[]): string {
+  if (files.length === 0) {
+    return '<div class="empty-nav">No source files indexed</div>';
+  }
+
+  const root: SourceTreeNode = { name: "", path: "", children: new Map() };
+  files.forEach((file) => {
+    const parts = file.path.split("/").filter(Boolean);
+    let node = root;
+    let currentPath = "";
+    for (const part of parts.slice(0, -1)) {
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      let child = node.children.get(part);
+      if (!child) {
+        child = { name: part, path: currentPath, children: new Map() };
+        node.children.set(part, child);
+      }
+      node = child;
+    }
+
+    const leafName = parts[parts.length - 1] ?? file.path;
+    node.children.set(`${leafName}\0${file.path}`, {
+      name: leafName,
+      path: file.path,
+      children: new Map(),
+      file,
+    });
+  });
+
+  return `<nav class="tree source-tree">${renderSourceChildren(root, 0)}</nav>`;
+}
+
+function renderSourceChildren(node: SourceTreeNode, depth: number): string {
+  return Array.from(node.children.values())
+    .sort((a, b) => {
+      if (Boolean(a.file) !== Boolean(b.file)) {
+        return a.file ? 1 : -1;
+      }
+      return a.name.localeCompare(b.name);
+    })
+    .map((child) => renderSourceNode(child, depth))
+    .join("\n");
+}
+
+function renderSourceNode(node: SourceTreeNode, depth: number): string {
+  if (node.file) {
+    const file = node.file;
+    const flags = [
+      file.changed ? "changed" : "",
+      file.embedded ? "" : "not embedded",
+    ].filter(Boolean).join(" | ");
+    return [
+      `<button type="button" class="file-link source-link tree-file" data-source-file="${escapeAttr(file.path)}" style="--depth:${depth}">`,
+      `<span class="status status-${file.changed ? "modified" : "source"}">${file.changed ? "diff" : "file"}</span>`,
+      `<span class="path" title="${escapeAttr(file.path)}">${escapeHtml(node.name)}</span>`,
+      `<span class="count">${escapeHtml(flags || file.language)}</span>`,
+      "</button>",
+    ].join("");
+  }
+
+  return [
+    `<details class="tree-dir source-dir" open style="--depth:${depth}">`,
+    `<summary><span class="folder-icon">v</span><span class="path">${escapeHtml(node.name)}</span></summary>`,
+    renderSourceChildren(node, depth + 1),
+    "</details>",
+  ].join("\n");
 }
 
 function readUnifiedDiff(options: {
@@ -1260,7 +897,7 @@ function readUntrackedDiff(context: number): string {
       chunks.push([
         `diff --git a/${file} b/${file}`,
         "new file mode 100644",
-        "Binary files /dev/null and b/" + file + " differ",
+        `Binary files /dev/null and b/${file} differ`,
       ].join("\n"));
       continue;
     }
@@ -1282,6 +919,102 @@ function readUntrackedDiff(context: number): string {
   }
 
   return chunks.join("\n");
+}
+
+function parseUnifiedDiff(content: string): DiffFile[] {
+  const files: DiffFile[] = [];
+  let current: DiffFile | undefined;
+  let hunk: DiffHunk | undefined;
+  let oldLine = 0;
+  let newLine = 0;
+
+  for (const line of content.split(/\r?\n/)) {
+    if (line.startsWith("diff --git ")) {
+      const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
+      const oldPath = match?.[1] ?? "unknown";
+      const newPath = match?.[2] ?? oldPath;
+      current = {
+        oldPath,
+        newPath,
+        displayPath: newPath === "/dev/null" ? oldPath : newPath,
+        status: "modified",
+        binary: false,
+        hunks: [],
+      };
+      files.push(current);
+      hunk = undefined;
+      continue;
+    }
+
+    if (!current) {
+      continue;
+    }
+
+    if (line.startsWith("new file mode ")) {
+      current.status = "added";
+      continue;
+    }
+    if (line.startsWith("deleted file mode ")) {
+      current.status = "deleted";
+      continue;
+    }
+    if (line.startsWith("rename from ")) {
+      current.status = "renamed";
+      current.oldPath = line.slice("rename from ".length);
+      continue;
+    }
+    if (line.startsWith("rename to ")) {
+      current.newPath = line.slice("rename to ".length);
+      current.displayPath = current.newPath;
+      continue;
+    }
+    if (line.startsWith("--- ")) {
+      current.oldPath = stripDiffPath(line.slice(4));
+      continue;
+    }
+    if (line.startsWith("+++ ")) {
+      current.newPath = stripDiffPath(line.slice(4));
+      current.displayPath = current.newPath === "/dev/null" ? current.oldPath : current.newPath;
+      continue;
+    }
+    if (line.startsWith("Binary files ") || line.startsWith("GIT binary patch")) {
+      current.binary = true;
+      continue;
+    }
+
+    const hunkMatch = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/);
+    if (hunkMatch) {
+      oldLine = Number(hunkMatch[1]);
+      newLine = Number(hunkMatch[3]);
+      hunk = {
+        header: line,
+        title: hunkMatch[5]?.trim() ?? "",
+        oldStart: oldLine,
+        newStart: newLine,
+        lines: [],
+      };
+      current.hunks.push(hunk);
+      continue;
+    }
+
+    if (!hunk) {
+      continue;
+    }
+
+    if (line.startsWith("+")) {
+      hunk.lines.push({ kind: "add", newLine, text: line.slice(1) });
+      newLine += 1;
+    } else if (line.startsWith("-")) {
+      hunk.lines.push({ kind: "delete", oldLine, text: line.slice(1) });
+      oldLine += 1;
+    } else if (line.startsWith(" ")) {
+      hunk.lines.push({ kind: "context", oldLine, newLine, text: line.slice(1) });
+      oldLine += 1;
+      newLine += 1;
+    }
+  }
+
+  return files.filter((file) => file.binary || file.hunks.length > 0);
 }
 
 function collectSourceFiles(diffFiles: DiffFile[]): SourceFile[] {
@@ -1393,528 +1126,6 @@ function isSourceCandidate(path: string): boolean {
   return true;
 }
 
-function parseUnifiedDiff(content: string): DiffFile[] {
-  const files: DiffFile[] = [];
-  let current: DiffFile | undefined;
-  let hunk: DiffHunk | undefined;
-  let oldLine = 0;
-  let newLine = 0;
-
-  for (const line of content.split(/\r?\n/)) {
-    if (line.startsWith("diff --git ")) {
-      const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
-      const oldPath = match?.[1] ?? "unknown";
-      const newPath = match?.[2] ?? oldPath;
-      current = {
-        oldPath,
-        newPath,
-        displayPath: newPath === "/dev/null" ? oldPath : newPath,
-        status: "modified",
-        binary: false,
-        hunks: [],
-      };
-      files.push(current);
-      hunk = undefined;
-      continue;
-    }
-
-    if (!current) {
-      continue;
-    }
-
-    if (line.startsWith("new file mode ")) {
-      current.status = "added";
-      continue;
-    }
-    if (line.startsWith("deleted file mode ")) {
-      current.status = "deleted";
-      continue;
-    }
-    if (line.startsWith("rename from ")) {
-      current.status = "renamed";
-      current.oldPath = line.slice("rename from ".length);
-      continue;
-    }
-    if (line.startsWith("rename to ")) {
-      current.newPath = line.slice("rename to ".length);
-      current.displayPath = current.newPath;
-      continue;
-    }
-    if (line.startsWith("--- ")) {
-      current.oldPath = stripDiffPath(line.slice(4));
-      continue;
-    }
-    if (line.startsWith("+++ ")) {
-      current.newPath = stripDiffPath(line.slice(4));
-      current.displayPath = current.newPath === "/dev/null" ? current.oldPath : current.newPath;
-      continue;
-    }
-    if (line.startsWith("Binary files ") || line.startsWith("GIT binary patch")) {
-      current.binary = true;
-      continue;
-    }
-
-    const hunkMatch = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/);
-    if (hunkMatch) {
-      oldLine = Number(hunkMatch[1]);
-      newLine = Number(hunkMatch[3]);
-      hunk = {
-        header: line,
-        title: hunkMatch[5]?.trim() ?? "",
-        oldStart: oldLine,
-        newStart: newLine,
-        lines: [],
-      };
-      current.hunks.push(hunk);
-      continue;
-    }
-
-    if (!hunk) {
-      continue;
-    }
-
-    if (line.startsWith("+")) {
-      hunk.lines.push({ kind: "add", newLine, text: line.slice(1) });
-      newLine += 1;
-    } else if (line.startsWith("-")) {
-      hunk.lines.push({ kind: "delete", oldLine, text: line.slice(1) });
-      oldLine += 1;
-    } else if (line.startsWith(" ")) {
-      hunk.lines.push({ kind: "context", oldLine, newLine, text: line.slice(1) });
-      oldLine += 1;
-      newLine += 1;
-    }
-  }
-
-  return files.filter((file) => file.binary || file.hunks.length > 0);
-}
-
-function buildDiffReview(input: {
-  base?: string;
-  staged: boolean;
-  includeUntracked: boolean;
-  context: number;
-  title: string;
-  watch?: boolean;
-}): DiffReviewBuild {
-  const diffText = readUnifiedDiff({
-    base: input.base,
-    staged: input.staged,
-    context: input.context,
-    includeUntracked: input.includeUntracked,
-  });
-  const files = parseUnifiedDiff(diffText);
-  const sourceFiles = collectSourceFiles(files);
-  const hunks = files.reduce((sum, file) => sum + file.hunks.length, 0);
-  const generatedAt = new Date().toISOString();
-  const diffHtml = renderDiff2Html(diffText);
-  const signature = createHash("sha1")
-    .update(diffText)
-    .update("\n")
-    .update(sourceFiles.map((file) => `${file.path}\0${file.size}\0${file.embedded ? file.content : file.skippedReason ?? ""}`).join("\n"))
-    .digest("hex");
-  const html = renderDiffHtml({
-    files,
-    diffHtml,
-    sourceFiles,
-    title: input.title,
-    subtitle: diffSubtitle(input),
-    watch: Boolean(input.watch),
-    signature,
-    generatedAt,
-  });
-
-  return {
-    html,
-    files: files.length,
-    hunks,
-    signature,
-    generatedAt,
-  };
-}
-
-function renderDiff2Html(diffText: string): string {
-  if (diffText.trim().length === 0) {
-    return "";
-  }
-
-  return renderDiff2HtmlMarkup(diffText, {
-    outputFormat: "side-by-side",
-    drawFileList: false,
-    matching: "lines",
-  });
-}
-
-function createDiffReview(input: {
-  base?: string;
-  staged: boolean;
-  includeUntracked: boolean;
-  context: number;
-  output: string;
-  title: string;
-}): DiffReviewResult {
-  const outputPath = resolve(input.output);
-  const build = buildDiffReview({
-    base: input.base,
-    staged: input.staged,
-    includeUntracked: input.includeUntracked,
-    context: input.context,
-    title: input.title,
-  });
-
-  mkdirSync(dirname(outputPath), { recursive: true });
-  writeFileSync(outputPath, build.html);
-  return {
-    path: outputPath,
-    url: pathToFileURL(outputPath).href,
-    files: build.files,
-    hunks: build.hunks,
-  };
-}
-
-function serveDiffWatch(input: {
-  base?: string;
-  staged: boolean;
-  includeUntracked: boolean;
-  context: number;
-  openInBrowser: boolean;
-  openInCmux: boolean;
-  port?: string;
-}): void {
-  const host = "127.0.0.1";
-  const port = input.port ? parsePositiveInteger(input.port, "--port") : 0;
-  const build = () => buildDiffReview({
-    base: input.base,
-    staged: input.staged,
-    includeUntracked: input.includeUntracked,
-    context: input.context,
-    title: "ai-flow live diff",
-    watch: true,
-  });
-
-  const server = createServer((request: IncomingMessage, response: ServerResponse) => {
-    const requestUrl = new URL(request.url ?? "/", `http://${host}`);
-    try {
-      if (requestUrl.pathname === "/__ai_flow_state") {
-        const latest = build();
-        writeHttpJson(response, {
-          signature: latest.signature,
-          generatedAt: latest.generatedAt,
-          files: latest.files,
-          hunks: latest.hunks,
-        });
-        return;
-      }
-
-      if (requestUrl.pathname === "/" || requestUrl.pathname === "/review") {
-        const latest = build();
-        writeHttp(response, 200, "text/html; charset=utf-8", latest.html);
-        return;
-      }
-
-      writeHttp(response, 404, "text/plain; charset=utf-8", "Not found\n");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      writeHttp(response, 500, "text/plain; charset=utf-8", `${message}\n`);
-    }
-  });
-
-  server.on("error", (error) => {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`ai-flow: diff watch server failed: ${message}`);
-    process.exit(1);
-  });
-
-  server.listen(port, host, () => {
-    const address = server.address();
-    const actualPort = typeof address === "object" && address ? address.port : port;
-    const url = `http://${host}:${actualPort}/review`;
-    console.log(`Live diff review: ${url}`);
-    console.log("Watching working tree. Press Ctrl+C to stop.");
-    if (input.openInCmux) {
-      try {
-        openCmuxBrowser(url);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.log(`Could not open cmux diff pane: ${message}`);
-      }
-    }
-    if (input.openInBrowser) {
-      spawnSync("open", [url], { stdio: "ignore" });
-    }
-  });
-}
-
-function writeHttp(response: ServerResponse, status: number, contentType: string, body: string): void {
-  response.writeHead(status, {
-    "content-type": contentType,
-    "cache-control": "no-store",
-  });
-  response.end(body);
-}
-
-function writeHttpJson(response: ServerResponse, body: unknown): void {
-  writeHttp(response, 200, "application/json; charset=utf-8", JSON.stringify(body));
-}
-
-function openDiffReviewAfterWorker(taskId: string): void {
-  try {
-    const result = createDiffReview({
-      staged: false,
-      includeUntracked: true,
-      context: 12,
-      output: join(process.cwd(), FLOW_DIR, "diffs", `${timestampForFile()}-${sanitizeFilePart(taskId)}-worker-review.html`),
-      title: `ai-flow Worker diff (${taskId})`,
-    });
-    console.log(`Diff review: ${relative(process.cwd(), result.path)}`);
-    console.log(`URL: ${result.url}`);
-    if (!commandExists("cmux")) {
-      return;
-    }
-    if (!process.env.CMUX_WORKSPACE_ID) {
-      console.log("cmux workspace not detected; open the URL above or run `ai-flow diff --open`.");
-      return;
-    }
-    try {
-      openCmuxBrowser(result.url);
-      console.log("Opened diff review in cmux.");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.log(`Could not open cmux diff pane: ${message}`);
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.log(`Could not create automatic diff review: ${message}`);
-  }
-}
-
-function renderDiffHtml(input: {
-  files: DiffFile[];
-  diffHtml: string;
-  sourceFiles: SourceFile[];
-  title: string;
-  subtitle: string;
-  watch?: boolean;
-  signature?: string;
-  generatedAt?: string;
-}): string {
-  const totalHunks = input.files.reduce((sum, file) => sum + file.hunks.length, 0);
-  const totalLines = input.files.reduce(
-    (sum, file) => sum + file.hunks.reduce((inner, hunk) => inner + hunk.lines.length, 0),
-    0,
-  );
-  const fileNav = renderDiffTree(input.files);
-  const sourceNav = renderSourceTree(input.sourceFiles);
-  const embeddedFiles = input.sourceFiles.filter((file) => file.embedded).length;
-
-  return [
-    "<!doctype html>",
-    '<html lang="en">',
-    "<head>",
-    '<meta charset="utf-8">',
-    '<meta name="viewport" content="width=device-width, initial-scale=1">',
-    '<link rel="icon" href="data:,">',
-    `<title>${escapeHtml(input.title)}</title>`,
-    "<style>",
-    diff2HtmlCss(),
-    diffCss(),
-    "</style>",
-    "</head>",
-    "<body>",
-    '<aside class="sidebar">',
-    `<div class="brand">ai-flow diff</div>`,
-    `<div class="summary">${input.files.length} changed · ${totalHunks} hunks · ${embeddedFiles}/${input.sourceFiles.length} files searchable</div>`,
-    `<div class="live-status ${input.watch ? "watching" : ""}" id="live-status">${input.watch ? "Live: watching for changes" : `Generated: ${escapeHtml(input.generatedAt ?? new Date().toISOString())}`}</div>`,
-    '<label class="search"><span>Search</span><input id="review-search" type="search" placeholder="Path or file content"></label>',
-    '<div class="tabs"><button type="button" class="tab active" data-tab="changes">Changes</button><button type="button" class="tab" data-tab="files">Files</button></div>',
-    '<div class="keymap"><kbd>F7</kbd> next hunk<br><kbd>Shift</kbd>+<kbd>F7</kbd> previous<br><kbd>Shift</kbd><kbd>Shift</kbd> search files<br><kbd>Cmd</kbd>+<kbd>E</kbd> recent files</div>',
-    `<div class="tab-panel" id="changes-panel">${fileNav}</div>`,
-    `<div class="tab-panel hidden" id="files-panel">${sourceNav}</div>`,
-    "</aside>",
-    '<main class="content">',
-    '<section id="diff-view">',
-    '<div class="toolbar">',
-    `<div><h1>${escapeHtml(input.title)}</h1><p>${escapeHtml(input.subtitle)}; ${escapeHtml(String(totalLines))} diff lines</p></div>`,
-    `<div class="counter"><span id="hunk-counter">0</span> / ${totalHunks}</div>`,
-    "</div>",
-    `<div id="diff2html-container" class="diff2html-container">${input.diffHtml || '<div class="empty">No diff to review.</div>'}</div>`,
-    "</section>",
-    '<section id="source-viewer" class="source-viewer hidden">',
-    '<div class="toolbar source-toolbar">',
-    '<div><h1 id="source-title">Source</h1><p id="source-meta">Select a file from the Files tab.</p></div>',
-    '<button type="button" id="back-to-diff" class="plain-button">Back to diff</button>',
-    "</div>",
-    '<div id="source-body" class="source-body empty">Select a file from the Files tab.</div>',
-    "</section>",
-    "</main>",
-    '<div id="quick-open" class="quick-open hidden" role="dialog" aria-modal="true" aria-label="Quick open">',
-    '<div class="quick-open-panel">',
-    '<div class="quick-open-title"><span id="quick-open-mode">Search files</span><span class="quick-open-hint">Up Down Enter Esc</span></div>',
-    '<input id="quick-open-input" type="search" autocomplete="off" spellcheck="false" placeholder="Search files">',
-    '<div id="quick-open-results" class="quick-open-results"></div>',
-    "</div>",
-    "</div>",
-    `<script type="application/json" id="review-meta" data-watch="${input.watch ? "true" : "false"}" data-signature="${escapeAttr(input.signature ?? "")}" data-generated-at="${escapeAttr(input.generatedAt ?? "")}">{}</script>`,
-    `<script type="application/json" id="source-files-data">${jsonForScript(input.sourceFiles)}</script>`,
-    "<script>",
-    diffScript(),
-    "</script>",
-    "</body>",
-    "</html>",
-  ].join("\n");
-}
-
-function renderDiffTree(files: DiffFile[]): string {
-  if (files.length === 0) {
-    return '<div class="empty-nav">No changed files</div>';
-  }
-
-  const root: DiffTreeNode = {
-    name: "",
-    path: "",
-    children: new Map(),
-  };
-  let hunkIndex = 0;
-
-  files.forEach((file, fileIndex) => {
-    const parts = file.displayPath.split("/").filter(Boolean);
-    let node = root;
-    let currentPath = "";
-    for (const part of parts.slice(0, -1)) {
-      currentPath = currentPath ? `${currentPath}/${part}` : part;
-      let child = node.children.get(part);
-      if (!child) {
-        child = { name: part, path: currentPath, children: new Map() };
-        node.children.set(part, child);
-      }
-      node = child;
-    }
-
-    const leafName = parts[parts.length - 1] ?? file.displayPath;
-    const firstHunk = hunkIndex;
-    hunkIndex += file.hunks.length;
-    node.children.set(`${leafName}\0${fileIndex}`, {
-      name: leafName,
-      path: file.displayPath,
-      children: new Map(),
-      file: {
-        index: fileIndex,
-        firstHunk,
-        hunkCount: file.hunks.length,
-        status: file.status,
-        displayPath: file.displayPath,
-      },
-    });
-  });
-
-  return `<nav class="tree">${renderTreeChildren(root, 0)}</nav>`;
-}
-
-function renderTreeChildren(node: DiffTreeNode, depth: number): string {
-  return Array.from(node.children.values())
-    .sort((a, b) => {
-      if (Boolean(a.file) !== Boolean(b.file)) {
-        return a.file ? 1 : -1;
-      }
-      return a.name.localeCompare(b.name);
-    })
-    .map((child) => renderTreeNode(child, depth))
-    .join("\n");
-}
-
-function renderTreeNode(node: DiffTreeNode, depth: number): string {
-  if (node.file) {
-    const file = node.file;
-    return [
-      `<a class="file-link tree-file" href="#file-${file.index}" data-hunk="${file.firstHunk}" data-file="${escapeAttr(file.displayPath)}" style="--depth:${depth}">`,
-      `<span class="status status-${escapeAttr(file.status)}">${escapeHtml(file.status)}</span>`,
-      `<span class="path" title="${escapeAttr(file.displayPath)}">${escapeHtml(node.name)}</span>`,
-      `<span class="count">${file.hunkCount}</span>`,
-      "</a>",
-    ].join("");
-  }
-
-  return [
-    `<details class="tree-dir" open style="--depth:${depth}">`,
-    `<summary><span class="folder-icon">▾</span><span class="path">${escapeHtml(node.name)}</span></summary>`,
-    renderTreeChildren(node, depth + 1),
-    "</details>",
-  ].join("\n");
-}
-
-function renderSourceTree(files: SourceFile[]): string {
-  if (files.length === 0) {
-    return '<div class="empty-nav">No source files indexed</div>';
-  }
-
-  const root: SourceTreeNode = {
-    name: "",
-    path: "",
-    children: new Map(),
-  };
-
-  files.forEach((file) => {
-    const parts = file.path.split("/").filter(Boolean);
-    let node = root;
-    let currentPath = "";
-    for (const part of parts.slice(0, -1)) {
-      currentPath = currentPath ? `${currentPath}/${part}` : part;
-      let child = node.children.get(part);
-      if (!child) {
-        child = { name: part, path: currentPath, children: new Map() };
-        node.children.set(part, child);
-      }
-      node = child;
-    }
-
-    const leafName = parts[parts.length - 1] ?? file.path;
-    node.children.set(`${leafName}\0${file.path}`, {
-      name: leafName,
-      path: file.path,
-      children: new Map(),
-      file,
-    });
-  });
-
-  return `<nav class="tree source-tree">${renderSourceChildren(root, 0)}</nav>`;
-}
-
-function renderSourceChildren(node: SourceTreeNode, depth: number): string {
-  return Array.from(node.children.values())
-    .sort((a, b) => {
-      if (Boolean(a.file) !== Boolean(b.file)) {
-        return a.file ? 1 : -1;
-      }
-      return a.name.localeCompare(b.name);
-    })
-    .map((child) => renderSourceNode(child, depth))
-    .join("\n");
-}
-
-function renderSourceNode(node: SourceTreeNode, depth: number): string {
-  if (node.file) {
-    const file = node.file;
-    const flags = [
-      file.changed ? "changed" : "",
-      file.embedded ? "" : "not embedded",
-    ].filter(Boolean).join(" · ");
-    return [
-      `<button type="button" class="file-link source-link tree-file" data-source-file="${escapeAttr(file.path)}" style="--depth:${depth}">`,
-      `<span class="status status-${file.changed ? "modified" : "source"}">${file.changed ? "diff" : "file"}</span>`,
-      `<span class="path" title="${escapeAttr(file.path)}">${escapeHtml(node.name)}</span>`,
-      `<span class="count">${escapeHtml(flags || file.language)}</span>`,
-      "</button>",
-    ].join("");
-  }
-
-  return [
-    `<details class="tree-dir source-dir" open style="--depth:${depth}">`,
-    `<summary><span class="folder-icon">▾</span><span class="path">${escapeHtml(node.name)}</span></summary>`,
-    renderSourceChildren(node, depth + 1),
-    "</details>",
-  ].join("\n");
-}
-
 function diff2HtmlCss(): string {
   try {
     return readFileSync(nodeRequire.resolve("diff2html/bundles/css/diff2html.min.css"), "utf8");
@@ -2002,22 +1213,9 @@ body {
 }
 .brand { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
 .summary, .keymap { color: var(--muted); font-size: 12px; line-height: 1.5; margin-bottom: 14px; }
-.live-status {
-  margin: 0 0 12px;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.4;
-}
-.live-status.watching {
-  color: var(--active);
-}
-.search {
-  display: grid;
-  gap: 6px;
-  margin-bottom: 10px;
-  color: var(--muted);
-  font-size: 12px;
-}
+.live-status { margin: 0 0 12px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.live-status.watching { color: var(--active); }
+.search { display: grid; gap: 6px; margin-bottom: 10px; color: var(--muted); font-size: 12px; }
 .search input {
   width: 100%;
   border: 1px solid var(--border);
@@ -2027,12 +1225,7 @@ body {
   background: var(--bg);
   font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
-.tabs {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
-  margin-bottom: 12px;
-}
+.tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 12px; }
 .tab, .plain-button {
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -2042,10 +1235,7 @@ body {
   font: 12px ui-sans-serif, system-ui, sans-serif;
   cursor: pointer;
 }
-.tab.active, .plain-button:hover {
-  border-color: var(--active);
-  color: var(--active);
-}
+.tab.active, .plain-button:hover { border-color: var(--active); color: var(--active); }
 .hidden { display: none !important; }
 kbd {
   display: inline-block;
@@ -2058,13 +1248,8 @@ kbd {
   color: var(--text);
   background: var(--bg);
 }
-.diff2html-container {
-  min-width: 0;
-}
-.d2h-wrapper {
-  background: transparent;
-  color: var(--text);
-}
+.diff2html-container { min-width: 0; }
+.d2h-wrapper { background: transparent; color: var(--text); }
 .d2h-file-wrapper {
   margin: 0 0 28px;
   overflow: hidden;
@@ -2078,95 +1263,44 @@ kbd {
   color: var(--text);
   font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
-.d2h-file-name {
-  color: var(--text);
-}
-.d2h-icon {
-  fill: var(--muted);
-}
-.d2h-tag {
-  border-color: var(--border);
-}
-.d2h-files-diff {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-}
-.d2h-file-side-diff {
-  min-width: 0;
-  overflow-x: auto;
-}
-.d2h-file-side-diff:first-child {
-  border-right: 1px solid var(--border);
-}
-.d2h-code-wrapper {
-  width: 100%;
-}
+.d2h-file-name { color: var(--text); }
+.d2h-icon { fill: var(--muted); }
+.d2h-tag { border-color: var(--border); }
+.d2h-files-diff { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.d2h-file-side-diff { min-width: 0; overflow-x: auto; }
+.d2h-file-side-diff:first-child { border-right: 1px solid var(--border); }
+.d2h-code-wrapper { width: 100%; }
 .d2h-diff-table {
   width: 100%;
   table-layout: fixed;
   font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
-.d2h-diff-table td {
-  line-height: 1.45;
-}
-.d2h-code-side-linenumber,
-.d2h-code-linenumber {
+.d2h-diff-table td { line-height: 1.45; }
+.d2h-code-side-linenumber, .d2h-code-linenumber {
   width: 58px;
   color: var(--muted);
   background: var(--line);
   border-color: var(--border);
 }
-.d2h-code-side-line,
-.d2h-code-line {
+.d2h-code-side-line, .d2h-code-line {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: var(--text);
 }
-.d2h-info {
-  background: var(--line);
-  color: var(--muted);
-  border-color: var(--border);
-}
-.d2h-del {
-  background: var(--del);
-}
-.d2h-ins {
-  background: var(--add);
-}
-.d2h-del .d2h-change {
-  background: var(--del-strong);
-}
-.d2h-ins .d2h-change {
-  background: var(--add-strong);
-}
-.d2h-code-side-linenumber.d2h-del,
-.d2h-code-linenumber.d2h-del {
-  background: var(--del);
-}
-.d2h-code-side-linenumber.d2h-ins,
-.d2h-code-linenumber.d2h-ins {
-  background: var(--add);
-}
-.d2h-diff-table tr.hunk,
-.d2h-diff-table tr.hunk-peer {
-  scroll-margin-top: 76px;
-}
-.d2h-diff-table tr.hunk.active td,
-.d2h-diff-table tr.hunk-peer.active td {
+.d2h-info { background: var(--line); color: var(--muted); border-color: var(--border); }
+.d2h-del { background: var(--del); }
+.d2h-ins { background: var(--add); }
+.d2h-del .d2h-change { background: var(--del-strong); }
+.d2h-ins .d2h-change { background: var(--add-strong); }
+.d2h-code-side-linenumber.d2h-del, .d2h-code-linenumber.d2h-del { background: var(--del); }
+.d2h-code-side-linenumber.d2h-ins, .d2h-code-linenumber.d2h-ins { background: var(--add); }
+.d2h-diff-table tr.hunk, .d2h-diff-table tr.hunk-peer { scroll-margin-top: 76px; }
+.d2h-diff-table tr.hunk.active td, .d2h-diff-table tr.hunk-peer.active td {
   box-shadow: inset 0 0 0 2px var(--active);
 }
-.d2h-file-collapse {
-  display: none;
-}
-.tree {
-  display: grid;
-  gap: 2px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-.tree-dir {
-  display: grid;
-  gap: 2px;
-}
+.d2h-file-collapse { display: none; }
+.tree { display: grid; gap: 2px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.tree-dir { display: grid; gap: 2px; }
 .tree-dir summary {
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr);
@@ -2189,9 +1323,7 @@ kbd {
   color: var(--muted);
   transition: transform 120ms ease;
 }
-.tree-file {
-  padding-left: calc(8px + (var(--depth) * 14px));
-}
+.tree-file { padding-left: calc(8px + (var(--depth) * 14px)); }
 .file-link {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -2208,10 +1340,7 @@ kbd {
   font: inherit;
   cursor: pointer;
 }
-.file-link:hover, .file-link.active {
-  background: var(--bg);
-  border-color: var(--border);
-}
+.file-link:hover, .file-link.active { background: var(--bg); border-color: var(--border); }
 .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .count { color: var(--muted); font-size: 12px; }
 .status {
@@ -2254,91 +1383,9 @@ h1 { margin: 0; font-size: 18px; }
   color: var(--muted);
   font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
-.file {
-  margin: 0 0 28px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
-  background: var(--panel);
-}
-.file-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-  background: var(--line);
-}
-.file-header h2 {
-  margin: 0;
-  font-size: 14px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  overflow-wrap: anywhere;
-}
-.hunk {
-  scroll-margin-top: 76px;
-  border-bottom: 1px solid var(--border);
-}
-.hunk:last-child { border-bottom: 0; }
-.hunk.active {
-  outline: 2px solid var(--active);
-  outline-offset: -2px;
-}
-.hunk-header {
-  display: flex;
-  gap: 10px;
-  padding: 8px 12px;
-  color: var(--muted);
-  border-bottom: 1px solid var(--border);
-  background: var(--line);
-  font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-.hunk-index { color: var(--active); font-weight: 700; }
-.diff-table {
-  width: 100%;
-  border-collapse: collapse;
-  table-layout: fixed;
-  font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-.diff-table td {
-  vertical-align: top;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  line-height: 1.45;
-}
-.num {
-  width: 58px;
-  user-select: none;
-  text-align: right;
-  color: var(--muted);
-  background: var(--line);
-  border-right: 1px solid var(--border);
-  padding: 2px 8px;
-}
-.code { width: calc(50% - 58px); padding: 2px 10px; }
-.old-code { border-right: 1px solid var(--border); }
-.line.add .new-code, .line.add .new { background: var(--add); }
-.line.delete .old-code, .line.delete .old { background: var(--del); }
-.line.add .marker { color: #1a7f37; font-weight: 700; margin-right: 6px; }
-.line.delete .marker { color: #cf222e; font-weight: 700; margin-right: 6px; }
-.hunk.active .line.add .new-code { background: var(--add-strong); }
-.hunk.active .line.delete .old-code { background: var(--del-strong); }
-.tok-comment { color: var(--token-comment); font-style: italic; }
-.tok-keyword { color: var(--token-keyword); font-weight: 650; }
-.tok-string { color: var(--token-string); }
-.tok-number { color: var(--token-number); }
-.tok-literal { color: var(--token-literal); }
-.tok-tag { color: var(--token-tag); font-weight: 650; }
-.binary, .empty {
-  padding: 24px;
-  color: var(--muted);
-}
-.source-viewer {
-  min-height: 100vh;
-}
-.source-toolbar {
-  margin-bottom: 0;
-}
+.empty { padding: 24px; color: var(--muted); }
+.source-viewer { min-height: 100vh; }
+.source-toolbar { margin-bottom: 0; }
 .source-body {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -2356,12 +1403,23 @@ h1 { margin: 0; font-size: 18px; }
   overflow-wrap: anywhere;
   line-height: 1.45;
 }
-.source-row.search-hit .source-code {
-  background: color-mix(in srgb, var(--active) 14%, transparent);
+.source-row.search-hit .source-code { background: color-mix(in srgb, var(--active) 14%, transparent); }
+.source-code { padding: 2px 10px; }
+.num {
+  width: 58px;
+  user-select: none;
+  text-align: right;
+  color: var(--muted);
+  background: var(--line);
+  border-right: 1px solid var(--border);
+  padding: 2px 8px;
 }
-.source-code {
-  padding: 2px 10px;
-}
+.tok-comment { color: var(--token-comment); font-style: italic; }
+.tok-keyword { color: var(--token-keyword); font-weight: 650; }
+.tok-string { color: var(--token-string); }
+.tok-number { color: var(--token-number); }
+.tok-literal { color: var(--token-literal); }
+.tok-tag { color: var(--token-tag); font-weight: 650; }
 .quick-open {
   position: fixed;
   inset: 0;
@@ -2391,9 +1449,7 @@ h1 { margin: 0; font-size: 18px; }
   color: var(--muted);
   font-size: 12px;
 }
-.quick-open-hint {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
+.quick-open-hint { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 #quick-open-input {
   width: 100%;
   border: 0;
@@ -2404,10 +1460,7 @@ h1 { margin: 0; font-size: 18px; }
   color: var(--text);
   font: 15px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
-.quick-open-results {
-  overflow: auto;
-  padding: 6px;
-}
+.quick-open-results { overflow: auto; padding: 6px; }
 .quick-open-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -2422,14 +1475,8 @@ h1 { margin: 0; font-size: 18px; }
   text-align: left;
   cursor: pointer;
 }
-.quick-open-item.active,
-.quick-open-item:hover {
-  background: var(--bg);
-  border-color: var(--active);
-}
-.quick-open-main {
-  min-width: 0;
-}
+.quick-open-item.active, .quick-open-item:hover { background: var(--bg); border-color: var(--active); }
+.quick-open-main { min-width: 0; }
 .quick-open-name {
   display: block;
   overflow: hidden;
@@ -2446,16 +1493,8 @@ h1 { margin: 0; font-size: 18px; }
   font-size: 12px;
   margin-top: 2px;
 }
-.quick-open-badge {
-  align-self: center;
-  color: var(--muted);
-  font-size: 12px;
-}
-.quick-open-empty {
-  padding: 28px 14px;
-  color: var(--muted);
-  font-size: 13px;
-}
+.quick-open-badge { align-self: center; color: var(--muted); font-size: 12px; }
+.quick-open-empty { padding: 28px 14px; color: var(--muted); font-size: 13px; }
 @media (max-width: 900px) {
   body { grid-template-columns: 1fr; }
   .sidebar { position: relative; height: auto; border-right: 0; border-bottom: 1px solid var(--border); }
@@ -2582,9 +1621,7 @@ function handleQuickOpenKey(event) {
 function renderQuickOpenResults() {
   if (!quickResults) return;
   const query = quickInput?.value.trim().toLowerCase() || '';
-  const candidates = quickMode === 'recent' && query.length === 0
-    ? recentItems()
-    : allQuickItems();
+  const candidates = quickMode === 'recent' && query.length === 0 ? recentItems() : allQuickItems();
   quickItems = candidates
     .filter((item) => quickMode !== 'recent' || query.length > 0 || item.recent)
     .filter((item) => {
@@ -2648,13 +1685,7 @@ function allQuickItems() {
   links.forEach((link) => {
     const path = link.dataset.file || '';
     if (!path || sourceByPath.has(path)) return;
-    items.push({
-      path,
-      name: baseName(path),
-      detail: 'diff',
-      kind: 'change',
-      recent: false,
-    });
+    items.push({ path, name: baseName(path), detail: 'diff', kind: 'change', recent: false });
   });
   const recent = loadRecent();
   const recentRank = new Map(recent.map((item, index) => [item.path, index]));
@@ -2707,9 +1738,7 @@ function rememberRecent(path, kind) {
   const next = [{ path, kind }, ...loadRecent().filter((item) => item.path !== path)].slice(0, 30);
   try {
     localStorage.setItem(recentKey, JSON.stringify(next));
-  } catch {
-    // Recent files are a convenience; ignore storage failures.
-  }
+  } catch {}
 }
 
 function baseName(path) {
@@ -2798,15 +1827,10 @@ searchInput?.addEventListener('input', () => {
 });
 
 const initial = location.hash.match(/^#hunk-(\\d+)$/);
-if (initial) {
-  setActive(Number(initial[1]), false);
-} else if (hunks.length > 0) {
-  setActive(0, false);
-}
+if (initial) setActive(Number(initial[1]), false);
+else if (hunks.length > 0) setActive(0, false);
 restoreUiState();
-if (watchEnabled) {
-  setInterval(checkForLiveUpdate, 1500);
-}
+if (watchEnabled) setInterval(checkForLiveUpdate, 1500);
 window.addEventListener('beforeunload', saveUiState);
 
 function setTab(name) {
@@ -2925,7 +1949,7 @@ function openSourceFile(path, shouldSwitch = true) {
     formatBytes(file.size || 0),
     file.changed ? 'changed' : 'unchanged',
     file.embedded ? 'searchable' : file.skippedReason || 'not embedded',
-  ].join(' · ');
+  ].join(' | ');
   document.getElementById('source-meta').textContent = meta;
   const body = document.getElementById('source-body');
   if (!file.embedded) {
@@ -3034,25 +2058,120 @@ function formatBytes(bytes) {
 `;
 }
 
-function diffSubtitle(options: {
-  base?: string;
-  staged: boolean;
-  includeUntracked: boolean;
-  context: number;
-}): string {
-  const source = options.staged ? "staged changes" : `working tree vs ${options.base ?? "HEAD"}`;
-  const untracked = options.includeUntracked ? "including untracked files" : "tracked files only";
-  return `${source}; ${untracked}; ${options.context} context lines`;
+function initialState(config: FlowConfig): string {
+  return [
+    "# AI Flow Validation State",
+    "",
+    `Project: ${config.projectName}`,
+    `Initialized: ${new Date().toISOString()}`,
+    "",
+    "## Goal",
+    "- Keep AI-generated changes reviewable, test-backed, and easy to inspect.",
+    "",
+    "## Checks",
+    "",
+    "## Reports",
+    "",
+  ].join("\n");
 }
 
-function openCmuxBrowser(url: string): void {
-  if (!commandExists("cmux")) {
-    throw new Error("cmux is not installed. Run `ai-flow doctor` for setup.");
+function initialDecisions(): string {
+  return [
+    "# AI Flow Decisions",
+    "",
+    "Record durable validation decisions here so future checks do not depend on chat memory.",
+    "",
+  ].join("\n");
+}
+
+function agentSnippet(): string {
+  return [
+    "<!-- AI-FLOW:START -->",
+    "## ai-flow Validation",
+    "",
+    "This repository uses ai-flow to verify AI-generated code changes.",
+    "",
+    "Before claiming completion on a code change:",
+    "",
+    "- Run `ai-flow check --include-untracked` or a more specific `ai-flow verify -- <command>`.",
+    "- Use `ai-flow diff --watch --open` while changes are still moving.",
+    "- Inspect changed hunks with F7 / Shift+F7.",
+    "- Use Shift Shift in the diff review to search indexed files, including unchanged files.",
+    "- Report the verification commands, results, and remaining risks.",
+    "",
+    "Do not claim a change is done without verification evidence or a precise explanation of why verification could not run.",
+    "<!-- AI-FLOW:END -->",
+    "",
+  ].join("\n");
+}
+
+function applyAgentDocSnippet(fileName: string): void {
+  const path = join(process.cwd(), fileName);
+  const snippet = agentSnippet();
+  if (!existsSync(path)) {
+    writeFileSync(path, `# ${fileName}\n\n${snippet}`);
+    return;
   }
-  const result = runCmux(["browser", "open", url]);
-  if (result.status !== 0) {
-    throw new Error(`cmux could not open diff review: ${result.stderr || result.stdout}`);
+
+  const current = readFileSync(path, "utf8");
+  const markerPattern = /<!-- AI-FLOW:START -->[\s\S]*?<!-- AI-FLOW:END -->\n?/;
+  const next = markerPattern.test(current)
+    ? current.replace(markerPattern, snippet)
+    : `${current.trimEnd()}\n\n${snippet}`;
+  writeFileSync(path, next);
+}
+
+function ensureInitialized(): void {
+  if (!existsSync(join(process.cwd(), FLOW_DIR, CONFIG_FILE))) {
+    throw new Error(`Missing ${FLOW_DIR}/. Run \`ai-flow init\` first.`);
   }
+}
+
+function loadConfig(): FlowConfig {
+  ensureInitialized();
+  const raw = JSON.parse(readFileSync(join(process.cwd(), FLOW_DIR, CONFIG_FILE), "utf8")) as Partial<FlowConfig>;
+  return {
+    version: 1,
+    projectName: raw.projectName ?? basename(process.cwd()),
+    verification: {
+      commands: Array.isArray(raw.verification?.commands) ? raw.verification.commands : [],
+    },
+    diff: {
+      context: typeof raw.diff?.context === "number" ? raw.diff.context : 12,
+      includeUntracked: typeof raw.diff?.includeUntracked === "boolean" ? raw.diff.includeUntracked : false,
+    },
+  };
+}
+
+function getVerificationCommands(config: FlowConfig): string[] {
+  return config.verification.commands.filter((command) => command.trim().length > 0);
+}
+
+function writeIfMissing(path: string, content: string, force: boolean): void {
+  if (!force && existsSync(path)) {
+    return;
+  }
+  writeFileSync(path, content);
+}
+
+function ensureAiFlowGitignore(root: string): boolean {
+  if (git(root, ["rev-parse", "--is-inside-work-tree"]) !== "true") {
+    return false;
+  }
+
+  const path = join(root, GITIGNORE_FILE);
+  const content = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const hasEntry = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .some((line) => line === FLOW_DIR || line === `${FLOW_DIR}/`);
+  if (hasEntry) {
+    return false;
+  }
+
+  const prefix = content.length === 0 ? "" : content.endsWith("\n") ? "\n" : "\n\n";
+  writeFileSync(path, `${content}${prefix}# ai-flow local validation artifacts\n${FLOW_DIR}/\n`);
+  return true;
 }
 
 function detectVerificationCommands(root: string): string[] {
@@ -3074,11 +2193,9 @@ function detectVerificationCommands(root: string): string[] {
   if (existsSync(join(root, "pyproject.toml"))) {
     commands.add(existsSync(join(root, "poetry.lock")) ? "poetry run pytest" : "pytest");
   }
-
   if (existsSync(join(root, "Cargo.toml"))) {
     commands.add("cargo test");
   }
-
   if (existsSync(join(root, "go.mod"))) {
     commands.add("go test ./...");
   }
@@ -3106,153 +2223,44 @@ function packageScriptCommand(manager: "npm" | "pnpm" | "yarn" | "bun", script: 
   return `pnpm ${script}`;
 }
 
-function parseTasks(content: string): Task[] {
-  const tasks: Task[] = [];
-  for (const line of content.split(/\r?\n/)) {
-    const checkbox = line.match(/^\s*[-*]\s+\[([ xX])\]\s*(?:(T\d+|[A-Za-z][\w-]*)[:.)-]?\s*)?(.*)$/);
-    const plain = line.match(/^\s*(T\d+)[:.)-]\s+(.+)$/);
-    if (checkbox) {
-      const id = checkbox[2] ?? `T${String(tasks.length + 1).padStart(3, "0")}`;
-      const title = checkbox[3]?.trim() || "Untitled task";
-      tasks.push({ id, title, done: checkbox[1].toLowerCase() === "x", raw: line });
-    } else if (plain) {
-      tasks.push({ id: plain[1], title: plain[2].trim(), done: false, raw: line });
-    }
-  }
-  return tasks;
+function readGitSnapshot(root: string): GitSnapshot {
+  return {
+    branch: git(root, ["branch", "--show-current"]),
+    status: git(root, ["status", "--short"]),
+    diffStat: git(root, ["diff", "--stat"]),
+    recentCommits: git(root, ["log", "--oneline", "-5"]),
+  };
 }
 
-function selectTask(tasks: Task[], taskId?: string): Task {
-  if (tasks.length === 0) {
-    throw new Error(`No tasks found in ${FLOW_DIR}/${TASKS_FILE}.`);
+function git(root: string, args: string[]): string {
+  const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
+  if (result.status !== 0) {
+    return "";
   }
-  if (taskId) {
-    const task = tasks.find((candidate) => candidate.id === taskId);
-    if (!task) {
-      throw new Error(`Task not found: ${taskId}`);
-    }
-    return task;
-  }
-  const next = tasks.find((task) => !task.done);
-  if (!next) {
-    throw new Error("All tasks are complete.");
-  }
-  return next;
+  return (result.stdout ?? "").trim();
 }
 
-function readOption(args: string[], name: string): string | undefined {
-  const index = args.indexOf(name);
-  if (index < 0) {
-    return undefined;
-  }
-  const value = args[index + 1];
-  if (!value || value.startsWith("--")) {
-    throw new Error(`Missing value for ${name}`);
-  }
-  return value;
+function writeHttp(response: ServerResponse, status: number, contentType: string, body: string): void {
+  response.writeHead(status, {
+    "content-type": contentType,
+    "cache-control": "no-store",
+  });
+  response.end(body);
 }
 
-function readFreeformObjective(args: string[], optionsWithValues: Set<string>): string {
-  const chunks: string[] = [];
-  for (let index = 0; index < args.length; index += 1) {
-    const value = args[index];
-    if (optionsWithValues.has(value)) {
-      index += 1;
-      continue;
-    }
-    if (value.startsWith("--")) {
-      continue;
-    }
-    chunks.push(value);
-  }
-  return chunks.join(" ").trim();
+function writeHttpJson(response: ServerResponse, body: unknown): void {
+  writeHttp(response, 200, "application/json; charset=utf-8", JSON.stringify(body));
 }
 
-function parsePositiveInteger(value: string, optionName: string): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 0) {
-    throw new Error(`${optionName} must be a non-negative integer`);
-  }
-  return parsed;
-}
-
-function parseAgent(value: string): AgentName {
-  if (value === "manual" || value === "codex" || value === "claude") {
-    return value;
-  }
-  throw new Error(`Unsupported agent: ${value}`);
-}
-
-function selectPlannerAgent(value?: string): Exclude<AgentName, "manual"> {
-  if (value) {
-    const parsed = parseAgent(value);
-    if (parsed === "manual") {
-      throw new Error("Planner boot requires --agent codex or --agent claude.");
-    }
-    return parsed;
-  }
-
-  if (existsSync(join(process.cwd(), FLOW_DIR, CONFIG_FILE))) {
-    const configured = loadConfig().defaultAgent;
-    if (configured !== "manual" && commandExists(configured)) {
-      return configured;
-    }
-  }
-
-  if (commandExists("codex")) {
-    return "codex";
-  }
-  if (commandExists("claude")) {
-    return "claude";
-  }
-  throw new Error("No supported agent CLI found. Install Codex CLI or Claude Code first.");
-}
-
-function parseRole(value: string): PromptRole {
-  if (value === "worker" || value === "reviewer") {
-    return value;
-  }
-  throw new Error(`Unsupported role: ${value}`);
-}
-
-function parseSessionRole(value: string): SessionRole {
-  if (value === "planner" || value === "worker" || value === "reviewer") {
-    return value;
-  }
-  throw new Error(`Unsupported session role: ${value}`);
-}
-
-function currentTaskId(): string {
-  const tasks = parseTasks(readFlowFile(TASKS_FILE));
-  const active = tasks.find((task) => !task.done);
-  if (active) {
-    return active.id;
-  }
-  if (tasks[0]) {
-    return tasks[0].id;
-  }
-  return "unknown-task";
-}
-
-function saveReport(
-  role: SessionRole,
-  taskId: string,
-  body: string,
-  timestamp = timestampForFile(),
-): string {
-  const reportDir = join(process.cwd(), FLOW_DIR, "reports");
-  mkdirSync(reportDir, { recursive: true });
-  const reportPath = join(reportDir, `${timestamp}-${role}-${sanitizeFilePart(taskId)}.md`);
-  const report = [
-    `# ${capitalize(role)} Report: ${taskId}`,
-    "",
-    `Recorded: ${new Date().toISOString()}`,
-    "",
-    body.trim(),
-    "",
-  ].join("\n");
-  writeFileSync(reportPath, report);
-  return reportPath;
+function diffSubtitle(options: {
+  base?: string;
+  staged: boolean;
+  includeUntracked: boolean;
+  context: number;
+}): string {
+  const source = options.staged ? "staged changes" : `working tree vs ${options.base ?? "HEAD"}`;
+  const untracked = options.includeUntracked ? "including untracked files" : "tracked files only";
+  return `${source}; ${untracked}; ${options.context} context lines`;
 }
 
 function stripDiffPath(value: string): string {
@@ -3287,294 +2295,24 @@ function isLikelyBinary(path: string): boolean {
   return sample.includes(0);
 }
 
-function savePrompt(role: PromptRole | SessionRole, taskId: string, agent: AgentName, prompt: string): string {
-  const promptDir = join(process.cwd(), FLOW_DIR, "prompts");
-  mkdirSync(promptDir, { recursive: true });
-  const promptPath = join(promptDir, `${timestampForFile()}-${taskId}-${role}-${agent}.md`);
-  writeFileSync(promptPath, prompt);
-  return promptPath;
-}
-
-function buildAgentReadPromptCommand(
-  agent: Exclude<AgentName, "manual">,
-  role: SessionRole,
-  promptPath: string,
-): string {
-  const instruction = [
-    `Read ${promptPath} and follow it exactly.`,
-    `This is an ai-flow ${role} session.`,
-    "Do not ask the user to run ai-flow or cmux commands.",
-  ].join(" ");
-
-  if (agent === "codex") {
-    return ["codex", "--cd", process.cwd(), instruction].map(shellQuote).join(" ");
-  }
-
-  return ["claude", instruction].map(shellQuote).join(" ");
-}
-
-function dispatchToCmux(command: string, role: PromptRole, taskId: string): {
-  workspace: string;
-  surface: string;
-} {
-  if (!commandExists("cmux")) {
-    throw new Error(
-      "cmux is not installed. Run `ai-flow doctor` for the simple setup path.",
-    );
-  }
-
-  const workspace = currentCmuxWorkspace();
-  if (!workspace) {
-    throw new Error(
-      "cmux is installed, but this Planner is not running inside a cmux workspace. Open the repo in cmux, start Planner there, then dispatch again.",
-    );
-  }
-
-  const paneResult = runCmux([
-    "--json",
-    "new-pane",
-    "--workspace",
-    workspace,
-    "--type",
-    "terminal",
-    "--direction",
-    "right",
-    "--focus",
-    "false",
-  ]);
-  if (paneResult.status !== 0) {
-    throw new Error(`cmux could not create a ${role} pane: ${paneResult.stderr || paneResult.stdout}`);
-  }
-
-  const pane = findCmuxRef(paneResult.stdout, "pane");
-  const surface =
-    findCmuxRef(paneResult.stdout, "surface") ??
-    (pane ? newestSurfaceForPane(workspace, pane) : undefined);
-
-  if (!surface) {
-    throw new Error("cmux created a pane, but ai-flow could not identify the terminal surface to send the Worker command.");
-  }
-
-  bestEffortCmux(["set-status", "ai-flow", `${role} ${taskId}`, "--workspace", workspace, "--color", "#0a84ff"]);
-  bestEffortCmux(["log", "--workspace", workspace, "--level", "info", "--", `ai-flow dispatch ${role} ${taskId}`]);
-
-  const sendResult = runCmux(["send", "--workspace", workspace, "--surface", surface, `${command}\n`]);
-  if (sendResult.status !== 0) {
-    throw new Error(`cmux could not send the ${role} command: ${sendResult.stderr || sendResult.stdout}`);
-  }
-
-  return { workspace, surface };
-}
-
-function openPlannerInCmux(command: string): string | undefined {
-  openCmuxApp();
-  waitForCmuxSocket(5000);
-  const result = runCmux([
-    "new-workspace",
-    "--name",
-    `ai-flow: ${basename(process.cwd())}`,
-    "--cwd",
-    process.cwd(),
-    "--command",
-    command,
-    "--focus",
-    "true",
-  ]);
-
-  if (result.status !== 0) {
+function readOption(args: string[], name: string): string | undefined {
+  const index = args.indexOf(name);
+  if (index < 0) {
     return undefined;
   }
-
-  return findCmuxRef(result.stdout, "workspace") ?? "created";
-}
-
-function openCmuxApp(): void {
-  spawnSync("open", ["-a", "cmux"], {
-    cwd: process.cwd(),
-    encoding: "utf8",
-  });
-}
-
-function waitForCmuxSocket(timeoutMs: number): boolean {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const result = runCmux(["workspace", "list", "--json"]);
-    if (result.status === 0) {
-      return true;
-    }
-    spawnSync("sleep", ["0.25"]);
-  }
-  return false;
-}
-
-function runInteractiveShell(command: string): void {
-  const result = spawnSync(command, {
-    cwd: process.cwd(),
-    shell: true,
-    stdio: "inherit",
-    env: process.env,
-  });
-  process.exit(result.status ?? 1);
-}
-
-function currentCmuxWorkspace(): string | undefined {
-  if (process.env.CMUX_WORKSPACE_ID) {
-    return normalizeCmuxRef("workspace", process.env.CMUX_WORKSPACE_ID);
-  }
-  return undefined;
-}
-
-function newestSurfaceForPane(workspace: string, pane: string): string | undefined {
-  const result = runCmux(["--json", "list-pane-surfaces", "--workspace", workspace]);
-  if (result.status !== 0) {
-    return undefined;
-  }
-  const surfaces = findSurfacesForPane(result.stdout, pane);
-  return surfaces[surfaces.length - 1];
-}
-
-function runCmux(args: string[]): { status: number; stdout: string; stderr: string } {
-  const result = spawnSync("cmux", args, {
-    cwd: process.cwd(),
-    encoding: "utf8",
-    env: process.env,
-    timeout: 5000,
-  });
-  return {
-    status: result.status ?? 1,
-    stdout: result.stdout ?? "",
-    stderr: result.stderr || (result.error instanceof Error ? result.error.message : ""),
-  };
-}
-
-function bestEffortCmux(args: string[]): void {
-  runCmux(args);
-}
-
-function commandExists(command: string): boolean {
-  const result = spawnSync("sh", ["-lc", `command -v ${shellQuote(command)} >/dev/null 2>&1`], {
-    encoding: "utf8",
-  });
-  return result.status === 0;
-}
-
-function normalizeCmuxRef(kind: string, value: string): string {
-  if (value.startsWith(`${kind}:`)) {
-    return value;
+  const value = args[index + 1];
+  if (!value || value.startsWith("--")) {
+    throw new Error(`Missing value for ${name}`);
   }
   return value;
 }
 
-function findCmuxRef(output: string, kind: string): string | undefined {
-  return findAllCmuxRefs(output, kind)[0];
-}
-
-function findAllCmuxRefs(output: string, kind: string): string[] {
-  const refs = new Set<string>();
-  const refPattern = new RegExp(`\\b${kind}:\\d+\\b`, "g");
-  for (const match of output.matchAll(refPattern)) {
-    refs.add(match[0]);
+function parsePositiveInteger(value: string, optionName: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`${optionName} must be a non-negative integer`);
   }
-
-  try {
-    collectCmuxRefs(JSON.parse(output) as unknown, kind, refs);
-  } catch {
-    // Plain text output is acceptable; regex extraction above is the fallback.
-  }
-
-  return Array.from(refs);
-}
-
-function collectCmuxRefs(value: unknown, kind: string, refs: Set<string>): void {
-  if (typeof value === "string") {
-    const ref = value.match(new RegExp(`\\b${kind}:\\d+\\b`));
-    if (ref) {
-      refs.add(ref[0]);
-    }
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      collectCmuxRefs(item, kind, refs);
-    }
-    return;
-  }
-  if (value && typeof value === "object") {
-    for (const item of Object.values(value)) {
-      collectCmuxRefs(item, kind, refs);
-    }
-  }
-}
-
-function findSurfacesForPane(output: string, pane: string): string[] {
-  try {
-    const value = JSON.parse(output) as unknown;
-    const surfaces = new Set<string>();
-    collectSurfacesForPane(value, pane, surfaces);
-    if (surfaces.size > 0) {
-      return Array.from(surfaces);
-    }
-  } catch {
-    // Fall back to all surface refs below.
-  }
-
-  return findAllCmuxRefs(output, "surface");
-}
-
-function collectSurfacesForPane(value: unknown, pane: string, surfaces: Set<string>): void {
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      collectSurfacesForPane(item, pane, surfaces);
-    }
-    return;
-  }
-  if (!value || typeof value !== "object") {
-    return;
-  }
-
-  const text = JSON.stringify(value);
-  if (text.includes(pane)) {
-    for (const surface of findAllCmuxRefs(text, "surface")) {
-      surfaces.add(surface);
-    }
-  }
-  for (const item of Object.values(value)) {
-    collectSurfacesForPane(item, pane, surfaces);
-  }
-}
-
-function markTaskComplete(taskId: string): void {
-  const tasksPath = join(process.cwd(), FLOW_DIR, TASKS_FILE);
-  const taskPattern = new RegExp(`\\b${escapeRegExp(taskId)}\\b`);
-  const current = readFileSync(tasksPath, "utf8");
-  let changed = false;
-  const next = current
-    .split(/\r?\n/)
-    .map((line) => {
-      if (!changed && taskPattern.test(line) && line.includes("[ ]")) {
-        changed = true;
-        return line.replace("[ ]", "[x]");
-      }
-      return line;
-    })
-    .join("\n");
-
-  if (!changed) {
-    throw new Error(`Could not mark task complete: ${taskId}`);
-  }
-
-  writeFileSync(tasksPath, next);
-}
-
-function listRecentFiles(dir: string, limit: number): string[] {
-  if (!existsSync(dir)) {
-    return [];
-  }
-  return readdirSync(dir)
-    .map((name) => join(dir, name))
-    .filter((path) => statSync(path).isFile())
-    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
-    .slice(0, limit);
+  return parsed;
 }
 
 function readStdin(): string {
@@ -3586,7 +2324,7 @@ function readStdin(): string {
 
 function appendToState(content: string): void {
   const path = join(process.cwd(), FLOW_DIR, STATE_FILE);
-  const current = readFileSync(path, "utf8");
+  const current = existsSync(path) ? readFileSync(path, "utf8") : "";
   writeFileSync(path, `${current.trimEnd()}\n${content}`);
 }
 
@@ -3599,18 +2337,6 @@ function summarizeForState(content: string): string {
   return lines.map((line) => `- ${line.replace(/^-+\s*/, "")}`).join("\n");
 }
 
-function truncateMarkdown(content: string, maxChars: number): string {
-  return truncateText(content.trim(), maxChars);
-}
-
-function truncateText(content: string, maxChars: number): string {
-  const trimmed = content.trim();
-  if (trimmed.length <= maxChars) {
-    return trimmed;
-  }
-  return `${trimmed.slice(0, maxChars)}\n\n...[truncated]`;
-}
-
 function codeBlock(content: string): string {
   return ["```", content, "```"].join("\n");
 }
@@ -3621,14 +2347,6 @@ function timestampForFile(): string {
 
 function sanitizeFilePart(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-|-$/g, "");
-}
-
-function capitalize(value: string): string {
-  return value.slice(0, 1).toUpperCase() + value.slice(1);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function escapeHtml(value: string): string {
@@ -3664,47 +2382,57 @@ function formatBytes(bytes: number): string {
   return `${(kib / 1024).toFixed(1)} MiB`;
 }
 
-function shellQuote(value: string): string {
-  if (/^[a-zA-Z0-9_./:=+-]+$/.test(value)) {
-    return value;
+function listRecentFiles(dir: string, limit: number): string[] {
+  if (!existsSync(dir)) {
+    return [];
   }
-  return `'${value.replace(/'/g, "'\\''")}'`;
+  return readdirSync(dir)
+    .map((name) => join(dir, name))
+    .filter((path) => statSync(path).isFile())
+    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
+    .slice(0, limit);
 }
 
 function printHelp(): void {
   console.log(`ai-flow
 
-Lightweight planning and verification control plane for AI coding agents.
+Validation control plane for AI-generated code changes.
 
 Usage:
-  ai-flow go [what you want built] [--agent codex|claude] [--dry-run] [--apply-agent-docs]
+  ai-flow check [--include-untracked] [--open] [--no-verify] [--no-diff] [-- <command>]
   ai-flow init [--force]
   ai-flow install [--force] [--apply-agent-docs]
-  ai-flow start planner|worker|reviewer [--agent manual|codex|claude] [--task T001] [--no-save]
-  ai-flow finish planner|worker|reviewer [--task T001] [--file report.md] [--complete] [--no-diff]
-  ai-flow dispatch worker|reviewer --agent codex|claude [--task T001] [--dry-run]
-  ai-flow diff [--base HEAD] [--staged] [--include-untracked] [--open] [--cmux] [--watch]
-  ai-flow doctor
-  ai-flow status
-  ai-flow next [--agent manual|codex|claude] [--role worker|reviewer] [--task T001] [--no-save]
-  ai-flow prompt worker|reviewer [--agent manual|codex|claude] [--task T001] [--no-save]
-  ai-flow report [--task T001] [--file report.md]
   ai-flow verify [-- <command>]
-  ai-flow run worker|reviewer --agent codex|claude [--task T001] [--dry-run] [--print]
+  ai-flow diff [--base HEAD] [--staged] [--include-untracked] [--open] [--watch]
+  ai-flow status
+  ai-flow report [--label manual] [--file report.md]
 
-Workflow:
-  1. Run: ai-flow go
-  2. Planner opens in cmux when available, or in the current terminal as fallback
-  3. Planner dispatches Worker/Reviewer sessions with cmux when needed
-  4. Worker finish opens a folder-tree diff review automatically; use F7 / Shift+F7 to move by hunk, Shift Shift to search files, and Cmd/Ctrl+E for recent files
+Default loop:
+  1. Let an AI agent edit code.
+  2. Run: ai-flow check --include-untracked --open
+  3. Inspect the generated diff review and verification log.
+  4. Only accept the change when verification evidence is clear.
 
-For people who do not know cmux:
-  ai-flow go
+Diff review keys:
+  F7         next changed hunk
+  Shift+F7  previous changed hunk
+  Shift Shift file search across indexed files
+  Cmd/Ctrl+E recent files
+`);
+}
 
-Legacy/manual:
-  ai-flow next --agent codex
-  ai-flow run worker --agent claude
-  ai-flow verify
+function printCheckHelp(): void {
+  console.log(`ai-flow check
+
+Run configured verification and create a reviewable diff artifact.
+
+Usage:
+  ai-flow check [--include-untracked] [--staged] [--base HEAD] [--context 12] [--open] [--no-verify] [--no-diff] [-- <command>]
+
+Examples:
+  ai-flow check --include-untracked --open
+  ai-flow check -- npm test
+  ai-flow check --no-verify --include-untracked
 `);
 }
 
@@ -3714,7 +2442,7 @@ function printDiffHelp(): void {
 Generate a browser-based side-by-side Git diff review.
 
 Usage:
-  ai-flow diff [--base HEAD] [--staged] [--include-untracked] [--context 12] [--output review.html] [--open] [--cmux] [--watch] [--port 0]
+  ai-flow diff [--base HEAD] [--staged] [--include-untracked] [--context 12] [--output review.html] [--open] [--watch] [--port 0]
 
 Keys in the review page:
   F7         next changed hunk

@@ -1,27 +1,29 @@
 # ai-flow
 
-Lightweight planning and verification control plane for AI coding agents.
+Validation control plane for AI-generated code changes.
 
-`ai-flow` does not replace [cmux](https://cmux.com/), Claude Code, Codex CLI, OpenCode, Cline, or other coding agents. It gives them a shared workflow:
+`ai-flow` is not an agent orchestrator. It does not manage panes, sessions, worktrees, or model adapters. Its job is narrower: after an AI edits a repository, produce verification evidence that a human can trust.
 
-- one planner that reads the repo state and decides the next slice
-- cmux-managed worker sessions that edit one slice
-- cmux-managed read-focused reviewers or researchers
-- durable state, prompts, reports, and verification logs in `.ai-flow/`
+It gives you:
 
-The default model is **one user-facing Planner, one writer at a time, many readers**. No git worktree is required.
+- detected verification commands in `.ai-flow/config.json`
+- repeatable verification logs under `.ai-flow/logs/`
+- diff2html review pages under `.ai-flow/diffs/`
+- searchable source previews, including unchanged indexed files
+- compact validation reports under `.ai-flow/reports/`
 
 ## Why
 
-AI coding sessions fail when the process depends on chat memory:
+AI coding output is hard to trust when review depends on chat memory or vague "done" claims. `ai-flow` keeps the review artifacts in the repository so the state can be inspected, rerun, and discussed.
 
-- the planner forgets what has already been done
-- workers expand scope
-- reviewers lack the acceptance criteria
-- context fills up and handoff gets messy
-- "done" is claimed without test evidence
+The intended loop is simple:
 
-`ai-flow` keeps the truth in the repository. Every session can restart from the same files, diff, tasks, reports, and logs.
+```text
+AI edits code.
+ai-flow runs verification.
+ai-flow creates a reviewable diff artifact.
+You inspect evidence before accepting the change.
+```
 
 ## Install
 
@@ -41,46 +43,30 @@ npm link
 
 ## Quick Start
 
-Inside the repository you want AI agents to work on, run one command:
+Inside the repository you want to validate:
 
 ```bash
-ai-flow go
+ai-flow init
+ai-flow check --include-untracked --open
 ```
 
-With no objective, Planner opens and asks what you want to build. It should not dump old project progress.
+`check` runs configured verification commands, writes a log, creates a browser diff review, and records a compact report.
 
-Or include the objective up front:
+For a one-off command:
 
 ```bash
-ai-flow go "add the missing empty state and verify it"
+ai-flow check -- npm test
 ```
 
-With an objective, Planner should split the work and immediately dispatch the first Worker when no user decision is needed.
-
-That command bootstraps the repo, installs ai-flow role instructions when needed, opens cmux when available, and starts a Planner agent. After that, the intended experience is:
-
-```text
-Talk to Planner only.
-Planner splits the work, dispatches Workers/Reviewers, opens diff reviews, and reports back.
-```
-
-If cmux is not available yet, `ai-flow go` falls back to the current terminal and `ai-flow doctor` explains the missing setup step.
-
-The old manual bootstrap still works:
+For live diff review while an AI is still editing:
 
 ```bash
-ai-flow install --apply-agent-docs
+ai-flow diff --watch --open --include-untracked
 ```
 
-Planner then uses `ai-flow dispatch worker|reviewer` internally. If cmux is available, dispatch creates a helper pane and sends a short command to the selected agent. If cmux is missing, `ai-flow doctor` explains the single missing setup step.
+## Diff Review
 
-When a Worker records completion, ai-flow automatically creates a visual diff review and opens it in cmux when available. For review while edits may still change, open a live review manually:
-
-```bash
-ai-flow diff --watch --cmux
-```
-
-The generated review page is powered by diff2html, has a folder-tree sidebar, and supports IntelliJ-style navigation:
+The generated review page is powered by diff2html and includes a folder-tree sidebar.
 
 - `F7`: next changed hunk
 - `Shift+F7`: previous changed hunk
@@ -88,144 +74,51 @@ The generated review page is powered by diff2html, has a folder-tree sidebar, an
 - `Shift Shift`: search indexed files, including unchanged files
 - `Cmd/Ctrl+E`: open recent files
 
-Planner sessions maintain `.ai-flow/tasks.md`:
-
-```markdown
-- [ ] T001: Add empty state rendering for the login form.
-- [ ] T002: Show a validation error when email is missing.
-- [ ] T003: Add a regression test for failed login loading state.
-```
-
-## Manual Mode
-
-The CLI remains available for agents, advanced users, and scripts.
-
-```bash
-ai-flow go --dry-run
-ai-flow doctor
-ai-flow status
-ai-flow dispatch worker --agent codex
-ai-flow dispatch reviewer --agent claude --task T001
-ai-flow diff --open
-ai-flow verify
-ai-flow report --task T001 --file worker-report.md
-```
+The `Files` tab opens source previews for indexed files even when they are unchanged. This is useful when validating whether an AI edit still fits surrounding code.
 
 ## Commands
 
 ```bash
-ai-flow go [what you want built] [--agent codex|claude] [--dry-run] [--no-cmux] [--no-auto-dispatch] [--apply-agent-docs]
+ai-flow check [--include-untracked] [--staged] [--base HEAD] [--context 12] [--open] [--no-verify] [--no-diff] [-- <command>]
 ```
 
-Bootstraps the repository and starts Planner. When cmux is available and the command is run outside cmux, it opens a new cmux workspace for the Planner. When run inside cmux, it starts Planner in the current terminal. Without cmux, it starts Planner in the current terminal as a fallback.
-
-Worker panes appear after Planner dispatches them. If you want that to happen immediately, pass the objective directly to `ai-flow go`.
-
-By default, `go` only writes local `.ai-flow/` state, which is ignored by Git. Pass `--apply-agent-docs` only if you want ai-flow to update `AGENTS.md` and `CLAUDE.md` with reusable role trigger snippets.
+Runs verification and creates a validation report. By default it uses commands from `.ai-flow/config.json`; pass `-- <command>` to override for one run.
 
 ```bash
 ai-flow init [--force]
 ```
 
-Creates `.ai-flow/` with config, state, tasks, decisions, prompts, reports, and logs. Because this is local orchestration state, ai-flow also adds `.ai-flow/` to `.gitignore` when the directory is inside a Git worktree.
+Creates `.ai-flow/` with config, state, decisions, reports, logs, and diff directories. Because these are local validation artifacts, ai-flow also adds `.ai-flow/` to `.gitignore` inside Git worktrees.
 
 ```bash
 ai-flow install [--force] [--apply-agent-docs]
 ```
 
-Installs role-session files under `.ai-flow/roles/` and `.ai-flow/cmux.md`. With `--apply-agent-docs`, it also adds the agent-facing trigger snippet to `AGENTS.md` and `CLAUDE.md`.
-
-```bash
-ai-flow start planner|worker|reviewer [--agent manual|codex|claude] [--task T001]
-```
-
-Starts a role session by generating the current role brief from repository state. Agents call this internally after the user chooses a role.
-
-```bash
-ai-flow finish planner|worker|reviewer [--task T001] [--file report.md] [--complete] [--no-diff]
-```
-
-Records the role report and appends a compact summary to `.ai-flow/state.md`. Workers pass `--complete` only after the task is verified. Worker finish creates a visual diff review automatically and opens it in cmux when available; pass `--no-diff` only when that review pane is not wanted.
-
-```bash
-ai-flow dispatch worker|reviewer --agent codex|claude [--task T001] [--dry-run]
-```
-
-Planner uses this to send a Worker or Reviewer into cmux. It saves the full prompt under `.ai-flow/prompts/`, creates a helper terminal pane when cmux is available, and sends the agent a short "read this prompt file" command.
-
-```bash
-ai-flow diff [--base HEAD] [--staged] [--include-untracked] [--open] [--cmux] [--watch]
-```
-
-Generates a browser-based side-by-side diff review under `.ai-flow/diffs/`. `--cmux` opens it in a cmux browser split. Add `--watch` to serve a live review that reloads when the working tree changes. The sidebar groups changed files as a folder tree, includes search, and has a Files tab for opening indexed source files even when they are unchanged. `F7` / `Shift+F7` move by changed hunk, not by file. `Shift Shift` opens file search across changed and unchanged indexed files; `Cmd/Ctrl+E` opens recent files.
-
-```bash
-ai-flow doctor
-```
-
-Checks whether cmux, Codex CLI, and Claude Code are available and explains the next setup step in plain language.
-
-```bash
-ai-flow status
-```
-
-Prints current branch, git status, diff stat, next task, recent reports, and verification commands.
-
-```bash
-ai-flow next [--agent manual|codex|claude] [--role worker|reviewer] [--task T001]
-```
-
-Builds the next prompt from the current repo state and saves it under `.ai-flow/prompts/`.
-
-```bash
-ai-flow prompt worker|reviewer [--agent manual|codex|claude] [--task T001]
-```
-
-Generates a role-specific prompt.
-
-```bash
-ai-flow run worker|reviewer --agent codex|claude [--task T001] [--dry-run] [--print]
-```
-
-Launches the selected agent in the current checkout. It does not create a worktree.
+Writes `.ai-flow/agent-snippet.md`, a short instruction block telling AI agents to run validation before claiming completion. With `--apply-agent-docs`, it updates `AGENTS.md` and `CLAUDE.md` marker blocks where available.
 
 ```bash
 ai-flow verify [-- <command>]
 ```
 
-Runs configured verification commands and stores the log in `.ai-flow/logs/`.
+Runs configured verification commands and stores the log in `.ai-flow/logs/`. Exits non-zero on failure.
 
 ```bash
-ai-flow report [--task T001] [--file report.md]
+ai-flow diff [--base HEAD] [--staged] [--include-untracked] [--context 12] [--output review.html] [--open] [--watch] [--port 0]
 ```
 
-Stores a worker report and appends a compact summary to `.ai-flow/state.md`.
-
-## Claude and Codex
-
-`ai-flow` supports both Claude Code and Codex CLI by treating them as adapters.
-
-Codex:
+Generates a browser-based side-by-side diff review. Add `--watch` to serve a live review that reloads when the working tree changes.
 
 ```bash
-ai-flow dispatch worker --agent codex
-ai-flow run worker --agent codex
-ai-flow run reviewer --agent codex --print
+ai-flow status
 ```
 
-Claude:
+Prints current branch, git status, diff stat, configured verification commands, recent reports, and recent logs.
 
 ```bash
-ai-flow dispatch worker --agent claude
-ai-flow run worker --agent claude
-ai-flow run reviewer --agent claude --print
+ai-flow report [--label manual] [--file report.md]
 ```
 
-For manual control, generate the prompt and paste it into any agent:
-
-```bash
-ai-flow prompt worker --agent manual
-```
+Stores a manual report under `.ai-flow/reports/` and appends a compact summary to `.ai-flow/state.md`.
 
 ## Repository State
 
@@ -233,42 +126,22 @@ ai-flow prompt worker --agent manual
 
 ```text
 .ai-flow/
-  config.json       verification commands and defaults
-  state.md          durable progress and reports
-  tasks.md          small verifiable slices
-  decisions.md      project decisions that should survive context resets
-  agent-snippet.md  instructions to paste into agent docs if needed
-  cmux.md           agent-facing cmux dispatch protocol
-  roles/            planner, worker, and reviewer lifecycle protocols
+  config.json       verification commands and diff defaults
+  state.md          compact validation history
+  decisions.md      durable validation decisions
   diffs/            generated browser diff reviews
-  prompts/          generated worker/reviewer prompts
-  reports/          worker reports
+  reports/          validation reports
   logs/             verification logs
 ```
 
-Commit `config.json`, `state.md`, `tasks.md`, `decisions.md`, `agent-snippet.md`, `cmux.md`, and `roles/` if you want the process to travel with the repo. Keep prompts, reports, and logs local unless your team wants those artifacts in version control.
+`ai-flow install` also writes `.ai-flow/agent-snippet.md` for projects that want to paste or apply agent-facing validation instructions.
+
+Keep `.ai-flow/` ignored unless your team explicitly wants to commit validation state.
 
 ## Design Principles
 
-- Single writer by default.
-- The user talks to Planner; Planner talks to cmux.
-- Readers can plan, review, research, and debug without editing.
-- The current repo state beats chat memory.
-- A task is not done until verification evidence exists.
-- Generated prompts should be small enough to review.
-- Claude, Codex, and manual copy/paste should all work.
-
-## Status
-
-This is an early MVP. The CLI is intentionally small and does not attempt to be a full autonomous agent platform.
-
-Planned:
-
-- configurable prompt templates
-- stricter report parsing
-- machine-readable task state
-- more adapters
-
-## License
-
-MIT
+- Verification evidence beats chat memory.
+- Generated artifacts should be plain Markdown, JSON, logs, or static HTML.
+- The tool should not require a specific AI agent, terminal multiplexer, editor, or worktree strategy.
+- The default command should be useful after any AI-generated edit.
+- A change is not accepted until verification evidence is clear or the gap is explicitly documented.

@@ -4,9 +4,9 @@ Guidance for AI coding agents working in this repository.
 
 ## Project
 
-`ai-flow` is a small TypeScript CLI. Its job is to coordinate external coding agents by generating prompts, tracking durable state, and running verification commands.
+`ai-flow` is a small TypeScript CLI. Its job is to validate AI-generated code changes by running verification commands, creating diff review artifacts, and preserving compact evidence.
 
-It is not an autonomous coding agent. Keep the core simple and adapter-oriented.
+It is not an autonomous coding agent or orchestration layer. Keep the core simple, local, and validation-oriented.
 
 ## Development
 
@@ -19,11 +19,11 @@ npm run smoke
 ## Conventions
 
 - Runtime code lives in `src/`.
-- The CLI should have no runtime dependencies unless there is a strong reason.
-- Keep generated project state under `.ai-flow/`.
+- The CLI should have no runtime dependencies unless there is a strong validation or review reason.
+- Keep generated validation artifacts under `.ai-flow/`.
 - Prefer plain Markdown and JSON artifacts so users can inspect and edit everything.
-- Do not introduce git worktree as a required workflow.
-- Treat Claude and Codex as adapters, not as core dependencies.
+- Do not introduce git worktree, terminal multiplexer, editor, or agent-specific requirements.
+- Treat AI tools as producers of changes; ai-flow is the verifier of those changes.
 
 ## Quality Bar
 
