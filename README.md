@@ -74,13 +74,13 @@ ai-flow install --apply-agent-docs
 
 Planner then uses `ai-flow dispatch worker|reviewer` internally. If cmux is available, dispatch creates a helper pane and sends a short command to the selected agent. If cmux is missing, `ai-flow doctor` explains the single missing setup step.
 
-When a Worker finishes, Planner can open a visual diff review:
+When a Worker records completion, ai-flow automatically creates a visual diff review and opens it in cmux when available. You can also open another review manually:
 
 ```bash
 ai-flow diff --cmux
 ```
 
-The generated review page supports IntelliJ-style hunk navigation:
+The generated review page has a folder-tree sidebar and supports IntelliJ-style hunk navigation:
 
 - `F7`: next changed hunk
 - `Shift+F7`: previous changed hunk
@@ -138,10 +138,10 @@ ai-flow start planner|worker|reviewer [--agent manual|codex|claude] [--task T001
 Starts a role session by generating the current role brief from repository state. Agents call this internally after the user chooses a role.
 
 ```bash
-ai-flow finish planner|worker|reviewer [--task T001] [--file report.md] [--complete]
+ai-flow finish planner|worker|reviewer [--task T001] [--file report.md] [--complete] [--no-diff]
 ```
 
-Records the role report and appends a compact summary to `.ai-flow/state.md`. Workers pass `--complete` only after the task is verified.
+Records the role report and appends a compact summary to `.ai-flow/state.md`. Workers pass `--complete` only after the task is verified. Worker finish creates a visual diff review automatically and opens it in cmux when available; pass `--no-diff` only when that review pane is not wanted.
 
 ```bash
 ai-flow dispatch worker|reviewer --agent codex|claude [--task T001] [--dry-run]
@@ -153,7 +153,7 @@ Planner uses this to send a Worker or Reviewer into cmux. It saves the full prom
 ai-flow diff [--base HEAD] [--staged] [--include-untracked] [--open] [--cmux]
 ```
 
-Generates a browser-based side-by-side diff review under `.ai-flow/diffs/`. `--cmux` opens it in a cmux browser split. `F7` and `Shift+F7` move by changed hunk, not by file.
+Generates a browser-based side-by-side diff review under `.ai-flow/diffs/`. `--cmux` opens it in a cmux browser split. The sidebar groups changed files as a folder tree, and `F7` / `Shift+F7` move by changed hunk, not by file.
 
 ```bash
 ai-flow doctor

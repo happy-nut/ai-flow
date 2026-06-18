@@ -63,6 +63,26 @@ type DiffFile = {
   hunks: DiffHunk[];
 };
 
+type DiffTreeNode = {
+  name: string;
+  path: string;
+  children: Map<string, DiffTreeNode>;
+  file?: {
+    index: number;
+    firstHunk: number;
+    hunkCount: number;
+    status: string;
+    displayPath: string;
+  };
+};
+
+type DiffReviewResult = {
+  path: string;
+  url: string;
+  files: number;
+  hunks: number;
+};
+
 const FLOW_DIR = ".ai-flow";
 const CONFIG_FILE = "config.json";
 const STATE_FILE = "state.md";
@@ -293,6 +313,7 @@ function finishSession(args: string[]): void {
   const taskId = readOption(rest, "--task") ?? currentTaskId();
   const file = readOption(rest, "--file");
   const complete = rest.includes("--complete");
+  const openDiff = role === "worker" && !rest.includes("--no-diff");
   const body = file ? readFileSync(file, "utf8") : readStdin();
   if (body.trim().length === 0) {
     throw new Error("No finish report provided. Pass --file or pipe report text on stdin.");
@@ -309,6 +330,9 @@ function finishSession(args: string[]): void {
   console.log(`Recorded ${relative(process.cwd(), reportPath)}`);
   if (complete) {
     console.log(`Marked ${taskId} complete.`);
+  }
+  if (openDiff) {
+    openDiffReviewAfterWorker(taskId);
   }
 }
 
@@ -396,30 +420,26 @@ function renderDiffReview(args: string[]): void {
   const openInCmux = args.includes("--cmux");
   const output = readOption(args, "--output") ??
     join(process.cwd(), FLOW_DIR, "diffs", `${timestampForFile()}-review.html`);
-  const outputPath = resolve(output);
-  const diffText = readUnifiedDiff({ base, staged, context, includeUntracked });
-  const files = parseUnifiedDiff(diffText);
-  const html = renderDiffHtml({
-    files,
+  const result = createDiffReview({
+    base,
+    staged,
+    includeUntracked,
+    context,
+    output,
     title: "ai-flow diff review",
-    subtitle: diffSubtitle({ base, staged, includeUntracked, context }),
   });
 
-  mkdirSync(dirname(outputPath), { recursive: true });
-  writeFileSync(outputPath, html);
-  const url = pathToFileURL(outputPath).href;
-
   if (openInCmux) {
-    openCmuxBrowser(url);
+    openCmuxBrowser(result.url);
   }
   if (openInBrowser) {
-    spawnSync("open", [outputPath], { stdio: "ignore" });
+    spawnSync("open", [result.path], { stdio: "ignore" });
   }
 
-  console.log(`Diff review: ${relative(process.cwd(), outputPath)}`);
-  console.log(`URL: ${url}`);
-  console.log(`Files: ${files.length}`);
-  console.log(`Hunks: ${files.reduce((sum, file) => sum + file.hunks.length, 0)}`);
+  console.log(`Diff review: ${relative(process.cwd(), result.path)}`);
+  console.log(`URL: ${result.url}`);
+  console.log(`Files: ${result.files}`);
+  console.log(`Hunks: ${result.hunks}`);
   console.log("Keys: F7 next change, Shift+F7 previous change, [ and ] as fallbacks.");
 }
 
@@ -643,6 +663,8 @@ function workerPrompt(input: {
     "- Behavior completed",
     "- Remaining risks or follow-up tasks",
     "",
+    "When you record completion with `ai-flow finish worker`, ai-flow creates a visual diff review automatically and opens it in cmux when available.",
+    "",
   ].join("\n");
 }
 
@@ -783,7 +805,7 @@ function plannerBootPrompt(input: {
     input.autoDispatch
       ? `- When the first Worker slice is clear and no user decision is needed, immediately run \`ai-flow dispatch worker --agent ${input.agent} --task <task-id>\`; do not ask for confirmation just to create the Worker pane.`
       : "- Auto-dispatch is disabled. Prepare the first Worker slice, then wait for the user.",
-    "- After Worker output, open visual review with `ai-flow diff --cmux` and inspect changed hunks with F7 / Shift+F7.",
+    "- Worker finish creates and opens the visual diff review automatically when cmux is available. Inspect changed hunks with F7 / Shift+F7.",
     "- Keep your visible response short: current action, Worker status if dispatched, and any question that genuinely blocks progress.",
     "",
     "## User Objective",
@@ -844,7 +866,7 @@ function plannerRoleDoc(): string {
     "- Keep tasks small, verifiable, and suitable for one Worker session.",
     "- Define acceptance criteria and validation commands.",
     "- If cmux is available, dispatch Workers and Reviewers with `ai-flow dispatch worker|reviewer --agent codex|claude`; do not make the user create panes manually.",
-    "- After a Worker finishes, open the diff review with `ai-flow diff --cmux` when cmux is available. Use F7/Shift+F7 to move by changed hunk, not just by file.",
+    "- After a Worker finishes, inspect the automatically opened diff review. Use F7/Shift+F7 to move by changed hunk, not just by file.",
     "- Do not edit product code unless the user explicitly changes this session into a Worker session.",
     "",
     "## Finish",
@@ -883,6 +905,8 @@ function workerRoleDoc(): string {
     "```bash",
     "ai-flow finish worker --task <task-id> --file <report-file> --complete",
     "```",
+    "",
+    "This automatically creates a visual diff review and opens it in cmux when available. Pass `--no-diff` only when the Planner explicitly does not need a visual review.",
     "",
     "Omit `--complete` if the task is not actually complete.",
     "",
@@ -933,7 +957,7 @@ function agentSnippet(): string {
     "- Reviewer: read `.ai-flow/roles/reviewer.md`, then run `ai-flow start reviewer`.",
     "",
     "The normal user experience is: the user talks only to Planner. Planner uses `.ai-flow/cmux.md` and `ai-flow dispatch worker|reviewer --agent codex|claude` to create separate cmux sessions when available.",
-    "For Worker review, Planner opens `ai-flow diff --cmux`; use F7 for next changed hunk and Shift+F7 for previous changed hunk.",
+    "Worker finish opens the visual diff review automatically when cmux is available; use F7 for next changed hunk and Shift+F7 for previous changed hunk.",
     "",
     "At the end of the session, write a concise report and record it with `ai-flow finish <role> --file <report-file>`. Workers should pass `--complete` only after verification succeeds.",
     "",
@@ -969,7 +993,8 @@ function cmuxGuide(): string {
     "- Prefer the current cmux workspace from `CMUX_WORKSPACE_ID`.",
     "- Do not change focus, switch workspaces, or close panes unless the user explicitly asks.",
     "- Dispatch should create or use helper terminal space without requiring the user to manage panes.",
-    "- For Worker review, open `ai-flow diff --cmux` and navigate changed hunks with F7 / Shift+F7.",
+    "- Worker finish opens the visual diff review automatically when cmux is available. Use `ai-flow diff --cmux` for an extra manual review pane.",
+    "- Navigate changed hunks with F7 / Shift+F7. The sidebar groups files as a folder tree.",
     "- If cmux is missing, run `ai-flow doctor` and explain the one missing setup step in plain language.",
     "",
     "## Completion Contract",
@@ -1269,26 +1294,78 @@ function parseUnifiedDiff(content: string): DiffFile[] {
   return files.filter((file) => file.binary || file.hunks.length > 0);
 }
 
+function createDiffReview(input: {
+  base?: string;
+  staged: boolean;
+  includeUntracked: boolean;
+  context: number;
+  output: string;
+  title: string;
+}): DiffReviewResult {
+  const outputPath = resolve(input.output);
+  const diffText = readUnifiedDiff({
+    base: input.base,
+    staged: input.staged,
+    context: input.context,
+    includeUntracked: input.includeUntracked,
+  });
+  const files = parseUnifiedDiff(diffText);
+  const html = renderDiffHtml({
+    files,
+    title: input.title,
+    subtitle: diffSubtitle(input),
+  });
+
+  mkdirSync(dirname(outputPath), { recursive: true });
+  writeFileSync(outputPath, html);
+  return {
+    path: outputPath,
+    url: pathToFileURL(outputPath).href,
+    files: files.length,
+    hunks: files.reduce((sum, file) => sum + file.hunks.length, 0),
+  };
+}
+
+function openDiffReviewAfterWorker(taskId: string): void {
+  try {
+    const result = createDiffReview({
+      staged: false,
+      includeUntracked: true,
+      context: 12,
+      output: join(process.cwd(), FLOW_DIR, "diffs", `${timestampForFile()}-${sanitizeFilePart(taskId)}-worker-review.html`),
+      title: `ai-flow Worker diff (${taskId})`,
+    });
+    console.log(`Diff review: ${relative(process.cwd(), result.path)}`);
+    console.log(`URL: ${result.url}`);
+    if (!commandExists("cmux")) {
+      return;
+    }
+    if (!process.env.CMUX_WORKSPACE_ID) {
+      console.log("cmux workspace not detected; open the URL above or run `ai-flow diff --open`.");
+      return;
+    }
+    try {
+      openCmuxBrowser(result.url);
+      console.log("Opened diff review in cmux.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.log(`Could not open cmux diff pane: ${message}`);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.log(`Could not create automatic diff review: ${message}`);
+  }
+}
+
 function renderDiffHtml(input: { files: DiffFile[]; title: string; subtitle: string }): string {
   const totalHunks = input.files.reduce((sum, file) => sum + file.hunks.length, 0);
   const totalLines = input.files.reduce(
     (sum, file) => sum + file.hunks.reduce((inner, hunk) => inner + hunk.lines.length, 0),
     0,
   );
-  let hunkIndex = 0;
-  const fileNav = input.files.map((file, index) => {
-    const firstHunk = hunkIndex;
-    hunkIndex += file.hunks.length;
-    return [
-      `<a class="file-link" href="#file-${index}" data-hunk="${firstHunk}">`,
-      `<span class="status status-${escapeAttr(file.status)}">${escapeHtml(file.status)}</span>`,
-      `<span class="path">${escapeHtml(file.displayPath)}</span>`,
-      `<span class="count">${file.hunks.length}</span>`,
-      "</a>",
-    ].join("");
-  }).join("\n");
+  const fileNav = renderDiffTree(input.files);
 
-  hunkIndex = 0;
+  let hunkIndex = 0;
   const files = input.files.map((file, fileIndex) => {
     const hunks = file.binary
       ? `<div class="binary">Binary file changed.</div>`
@@ -1318,7 +1395,7 @@ function renderDiffHtml(input: { files: DiffFile[]; title: string; subtitle: str
     `<div class="brand">ai-flow diff</div>`,
     `<div class="summary">${input.files.length} files · ${totalHunks} hunks · ${totalLines} lines</div>`,
     '<div class="keymap"><kbd>F7</kbd> next hunk<br><kbd>Shift</kbd>+<kbd>F7</kbd> previous<br><kbd>]</kbd>/<kbd>[</kbd> fallback</div>',
-    `<nav>${fileNav || '<div class="empty-nav">No changed files</div>'}</nav>`,
+    fileNav,
     "</aside>",
     '<main class="content">',
     '<div class="toolbar">',
@@ -1374,6 +1451,84 @@ function renderHunk(file: DiffFile, hunk: DiffHunk, index: number): string {
     rows,
     "</tbody></table>",
     "</section>",
+  ].join("\n");
+}
+
+function renderDiffTree(files: DiffFile[]): string {
+  if (files.length === 0) {
+    return '<div class="empty-nav">No changed files</div>';
+  }
+
+  const root: DiffTreeNode = {
+    name: "",
+    path: "",
+    children: new Map(),
+  };
+  let hunkIndex = 0;
+
+  files.forEach((file, fileIndex) => {
+    const parts = file.displayPath.split("/").filter(Boolean);
+    let node = root;
+    let currentPath = "";
+    for (const part of parts.slice(0, -1)) {
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      let child = node.children.get(part);
+      if (!child) {
+        child = { name: part, path: currentPath, children: new Map() };
+        node.children.set(part, child);
+      }
+      node = child;
+    }
+
+    const leafName = parts[parts.length - 1] ?? file.displayPath;
+    const firstHunk = hunkIndex;
+    hunkIndex += file.hunks.length;
+    node.children.set(`${leafName}\0${fileIndex}`, {
+      name: leafName,
+      path: file.displayPath,
+      children: new Map(),
+      file: {
+        index: fileIndex,
+        firstHunk,
+        hunkCount: file.hunks.length,
+        status: file.status,
+        displayPath: file.displayPath,
+      },
+    });
+  });
+
+  return `<nav class="tree">${renderTreeChildren(root, 0)}</nav>`;
+}
+
+function renderTreeChildren(node: DiffTreeNode, depth: number): string {
+  return Array.from(node.children.values())
+    .sort((a, b) => {
+      if (Boolean(a.file) !== Boolean(b.file)) {
+        return a.file ? 1 : -1;
+      }
+      return a.name.localeCompare(b.name);
+    })
+    .map((child) => renderTreeNode(child, depth))
+    .join("\n");
+}
+
+function renderTreeNode(node: DiffTreeNode, depth: number): string {
+  if (node.file) {
+    const file = node.file;
+    return [
+      `<a class="file-link tree-file" href="#file-${file.index}" data-hunk="${file.firstHunk}" data-file="${escapeAttr(file.displayPath)}" style="--depth:${depth}">`,
+      `<span class="status status-${escapeAttr(file.status)}">${escapeHtml(file.status)}</span>`,
+      `<span class="path" title="${escapeAttr(file.displayPath)}">${escapeHtml(node.name)}</span>`,
+      `<span class="count">${file.hunkCount}</span>`,
+      "</a>",
+    ].join("");
+  }
+
+  return [
+    `<details class="tree-dir" open style="--depth:${depth}">`,
+    `<summary><span class="folder-icon">▾</span><span class="path">${escapeHtml(node.name)}</span></summary>`,
+    renderTreeChildren(node, depth + 1),
+    "</details>",
   ].join("\n");
 }
 
@@ -1441,7 +1596,40 @@ kbd {
   color: var(--text);
   background: var(--bg);
 }
-nav { display: grid; gap: 4px; }
+.tree {
+  display: grid;
+  gap: 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.tree-dir {
+  display: grid;
+  gap: 2px;
+}
+.tree-dir summary {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 4px 6px 4px calc(6px + (var(--depth) * 14px));
+  color: var(--muted);
+  border-radius: 6px;
+  cursor: default;
+  list-style: none;
+}
+.tree-dir summary::-webkit-details-marker { display: none; }
+.tree-dir summary:hover { background: var(--bg); }
+.tree-dir:not([open]) .folder-icon { transform: rotate(-90deg); }
+.folder-icon {
+  display: inline-grid;
+  place-items: center;
+  font-size: 10px;
+  color: var(--muted);
+  transition: transform 120ms ease;
+}
+.tree-file {
+  padding-left: calc(8px + (var(--depth) * 14px));
+}
 .file-link {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -1592,7 +1780,7 @@ function setActive(index, shouldScroll = true) {
   hunks.forEach((hunk, i) => hunk.classList.toggle('active', i === current));
   const active = hunks[current];
   const file = active.dataset.file;
-  links.forEach((link) => link.classList.toggle('active', link.querySelector('.path')?.textContent === file));
+  links.forEach((link) => link.classList.toggle('active', link.dataset.file === file));
   document.getElementById('hunk-counter').textContent = String(current + 1);
   if (shouldScroll) active.scrollIntoView({ block: 'center', behavior: 'smooth' });
   history.replaceState(null, '', '#hunk-' + current);
@@ -1618,7 +1806,7 @@ document.addEventListener('keydown', (event) => {
 links.forEach((link) => {
   link.addEventListener('click', (event) => {
     const target = Number(link.dataset.hunk);
-    if (!Number.isNaN(target)) {
+    if (!Number.isNaN(target) && target >= 0 && target < hunks.length) {
       event.preventDefault();
       setActive(target);
     }
@@ -2221,7 +2409,7 @@ function escapeHtml(value: string): string {
 }
 
 function escapeAttr(value: string): string {
-  return escapeHtml(value).replace(/\s+/g, "-");
+  return escapeHtml(value);
 }
 
 function shellQuote(value: string): string {
@@ -2241,7 +2429,7 @@ Usage:
   ai-flow init [--force]
   ai-flow install [--force] [--apply-agent-docs]
   ai-flow start planner|worker|reviewer [--agent manual|codex|claude] [--task T001] [--no-save]
-  ai-flow finish planner|worker|reviewer [--task T001] [--file report.md] [--complete]
+  ai-flow finish planner|worker|reviewer [--task T001] [--file report.md] [--complete] [--no-diff]
   ai-flow dispatch worker|reviewer --agent codex|claude [--task T001] [--dry-run]
   ai-flow diff [--base HEAD] [--staged] [--include-untracked] [--open] [--cmux]
   ai-flow doctor
@@ -2256,7 +2444,7 @@ Workflow:
   1. Run: ai-flow go
   2. Planner opens in cmux when available, or in the current terminal as fallback
   3. Planner dispatches Worker/Reviewer sessions with cmux when needed
-  4. Planner opens Worker changes with ai-flow diff --cmux; use F7 / Shift+F7 to move by hunk
+  4. Worker finish opens a folder-tree diff review automatically; use F7 / Shift+F7 to move by hunk
 
 For people who do not know cmux:
   ai-flow go
@@ -2280,6 +2468,8 @@ Keys in the review page:
   F7         next changed hunk
   Shift+F7  previous changed hunk
   ] / [     fallback hunk navigation
+
+The sidebar groups changed files as a folder tree.
 `);
 }
 
