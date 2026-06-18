@@ -112,18 +112,20 @@ ai-flow report --task T001 --file worker-report.md
 ## Commands
 
 ```bash
-ai-flow go [what you want built] [--agent codex|claude] [--dry-run] [--no-cmux] [--no-auto-dispatch]
+ai-flow go [what you want built] [--agent codex|claude] [--dry-run] [--no-cmux] [--no-auto-dispatch] [--apply-agent-docs]
 ```
 
 Bootstraps the repository and starts Planner. When cmux is available and the command is run outside cmux, it opens a new cmux workspace for the Planner. When run inside cmux, it starts Planner in the current terminal. Without cmux, it starts Planner in the current terminal as a fallback.
 
 Worker panes appear after Planner dispatches them. If you want that to happen immediately, pass the objective directly to `ai-flow go`.
 
+By default, `go` only writes local `.ai-flow/` state, which is ignored by Git. Pass `--apply-agent-docs` only if you want ai-flow to update `AGENTS.md` and `CLAUDE.md` with reusable role trigger snippets.
+
 ```bash
 ai-flow init [--force]
 ```
 
-Creates `.ai-flow/` with config, state, tasks, decisions, prompts, reports, and logs.
+Creates `.ai-flow/` with config, state, tasks, decisions, prompts, reports, and logs. Because this is local orchestration state, ai-flow also adds `.ai-flow/` to `.gitignore` when the directory is inside a Git worktree.
 
 ```bash
 ai-flow install [--force] [--apply-agent-docs]

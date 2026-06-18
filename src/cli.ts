@@ -84,6 +84,7 @@ type DiffReviewResult = {
 };
 
 const FLOW_DIR = ".ai-flow";
+const GITIGNORE_FILE = ".gitignore";
 const CONFIG_FILE = "config.json";
 const STATE_FILE = "state.md";
 const TASKS_FILE = "tasks.md";
@@ -183,9 +184,13 @@ function initFlow(args: string[]): void {
   writeIfMissing(join(flowPath, STATE_FILE), initialState(config), force);
   writeIfMissing(join(flowPath, TASKS_FILE), initialTasks(), force);
   writeIfMissing(join(flowPath, DECISIONS_FILE), initialDecisions(), force);
+  const ignored = ensureAiFlowGitignore(root);
 
   if (!quiet) {
     console.log(`Initialized ${FLOW_DIR}/ in ${root}`);
+    if (ignored) {
+      console.log(`Updated ${GITIGNORE_FILE} to ignore ${FLOW_DIR}/ local orchestration state.`);
+    }
     console.log("Next: run `ai-flow install --apply-agent-docs` for role-based sessions.");
   }
 }
@@ -221,7 +226,7 @@ function installFlow(args: string[]): void {
 function bootstrapPlanner(args: string[]): void {
   const dryRun = args.includes("--dry-run");
   const noCmux = args.includes("--no-cmux");
-  const applyAgentDocs = !args.includes("--no-agent-docs");
+  const applyAgentDocs = args.includes("--apply-agent-docs");
   const force = args.includes("--force");
   const explicitAgent = readOption(args, "--agent");
   const objective = readFreeformObjective(args, new Set(["--agent", "--message"]));
@@ -1061,6 +1066,33 @@ function writeIfMissing(path: string, content: string, force: boolean): void {
     return;
   }
   writeFileSync(path, content);
+}
+
+function ensureAiFlowGitignore(root: string): boolean {
+  if (git(root, ["rev-parse", "--is-inside-work-tree"]) !== "true") {
+    return false;
+  }
+
+  const path = join(root, GITIGNORE_FILE);
+  const content = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const hasEntry = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .some((line) => line === FLOW_DIR || line === `${FLOW_DIR}/`);
+  if (hasEntry) {
+    return false;
+  }
+
+  const prefix = content.length === 0
+    ? ""
+    : content.endsWith("\n")
+      ? "\n"
+      : "\n\n";
+  writeFileSync(
+    path,
+    `${content}${prefix}# ai-flow local orchestration state\n${FLOW_DIR}/\n`,
+  );
+  return true;
 }
 
 function initialState(config: FlowConfig): string {
@@ -2425,7 +2457,7 @@ function printHelp(): void {
 Lightweight planning and verification control plane for AI coding agents.
 
 Usage:
-  ai-flow go [what you want built] [--agent codex|claude] [--dry-run]
+  ai-flow go [what you want built] [--agent codex|claude] [--dry-run] [--apply-agent-docs]
   ai-flow init [--force]
   ai-flow install [--force] [--apply-agent-docs]
   ai-flow start planner|worker|reviewer [--agent manual|codex|claude] [--task T001] [--no-save]
