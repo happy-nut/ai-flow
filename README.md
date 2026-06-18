@@ -155,7 +155,7 @@ Planner uses this to send a Worker or Reviewer into cmux. It saves the full prom
 ai-flow diff [--base HEAD] [--staged] [--include-untracked] [--open] [--cmux]
 ```
 
-Generates a browser-based side-by-side diff review under `.ai-flow/diffs/`. `--cmux` opens it in a cmux browser split. The sidebar groups changed files as a folder tree, and `F7` / `Shift+F7` move by changed hunk, not by file.
+Generates a browser-based side-by-side diff review under `.ai-flow/diffs/`. `--cmux` opens it in a cmux browser split. The sidebar groups changed files as a folder tree, includes search, and has a Files tab for opening indexed source files even when they are unchanged. `F7` / `Shift+F7` move by changed hunk, not by file.
 
 ```bash
 ai-flow doctor

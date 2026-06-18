@@ -83,6 +83,24 @@ type DiffReviewResult = {
   hunks: number;
 };
 
+type SourceFile = {
+  path: string;
+  name: string;
+  language: string;
+  content: string;
+  size: number;
+  changed: boolean;
+  embedded: boolean;
+  skippedReason?: string;
+};
+
+type SourceTreeNode = {
+  name: string;
+  path: string;
+  children: Map<string, SourceTreeNode>;
+  file?: SourceFile;
+};
+
 const FLOW_DIR = ".ai-flow";
 const GITIGNORE_FILE = ".gitignore";
 const CONFIG_FILE = "config.json";
@@ -92,6 +110,9 @@ const DECISIONS_FILE = "decisions.md";
 const AGENT_SNIPPET_FILE = "agent-snippet.md";
 const CMUX_FILE = "cmux.md";
 const ROLES_DIR = "roles";
+const SOURCE_MAX_FILE_BYTES = 220_000;
+const SOURCE_MAX_TOTAL_BYTES = 5_000_000;
+const SOURCE_MAX_FILES = 1200;
 
 function main(): void {
   const [command = "--help", ...args] = process.argv.slice(2);
@@ -1230,6 +1251,115 @@ function readUntrackedDiff(context: number): string {
   return chunks.join("\n");
 }
 
+function collectSourceFiles(diffFiles: DiffFile[]): SourceFile[] {
+  const changed = new Set(
+    diffFiles
+      .map((file) => file.displayPath)
+      .filter((path) => path && path !== "/dev/null"),
+  );
+  const paths = new Set<string>();
+  const gitFiles = git(process.cwd(), ["ls-files", "--cached", "--others", "--exclude-standard"]);
+  for (const file of gitFiles.split(/\r?\n/)) {
+    const path = file.trim();
+    if (path && isSourceCandidate(path)) {
+      paths.add(path);
+    }
+  }
+  for (const path of changed) {
+    if (isSourceCandidate(path)) {
+      paths.add(path);
+    }
+  }
+
+  const sourceFiles: SourceFile[] = [];
+  let embeddedFiles = 0;
+  let embeddedBytes = 0;
+
+  for (const path of Array.from(paths).sort((a, b) => a.localeCompare(b))) {
+    const absolute = join(process.cwd(), path);
+    const base: SourceFile = {
+      path,
+      name: basename(path),
+      language: languageForPath(path),
+      content: "",
+      size: 0,
+      changed: changed.has(path),
+      embedded: false,
+    };
+
+    if (!existsSync(absolute)) {
+      sourceFiles.push({ ...base, skippedReason: "file is not present in the working tree" });
+      continue;
+    }
+
+    const stats = statSync(absolute);
+    if (!stats.isFile()) {
+      continue;
+    }
+
+    if (isLikelyBinary(absolute)) {
+      sourceFiles.push({ ...base, size: stats.size, skippedReason: "binary file" });
+      continue;
+    }
+
+    if (stats.size > SOURCE_MAX_FILE_BYTES) {
+      sourceFiles.push({ ...base, size: stats.size, skippedReason: `larger than ${formatBytes(SOURCE_MAX_FILE_BYTES)}` });
+      continue;
+    }
+
+    if (embeddedFiles >= SOURCE_MAX_FILES || embeddedBytes + stats.size > SOURCE_MAX_TOTAL_BYTES) {
+      sourceFiles.push({ ...base, size: stats.size, skippedReason: "source index budget reached" });
+      continue;
+    }
+
+    sourceFiles.push({
+      ...base,
+      content: readFileSync(absolute, "utf8"),
+      size: stats.size,
+      embedded: true,
+    });
+    embeddedFiles += 1;
+    embeddedBytes += stats.size;
+  }
+
+  return sourceFiles;
+}
+
+function isSourceCandidate(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  if (!normalized || normalized.startsWith(`${FLOW_DIR}/`)) {
+    return false;
+  }
+  const blocked = [
+    ".git/",
+    ".omc/",
+    ".claude/",
+    ".playwright-mcp/",
+    "node_modules/",
+    "dist/",
+    "build/",
+    "coverage/",
+    "test-results/",
+    "release/",
+    ".next/",
+    ".turbo/",
+    ".cache/",
+    ".granite/",
+    ".pytest_cache/",
+    "__pycache__/",
+    "tmp/",
+    "vendor/",
+  ];
+  if (blocked.some((part) => normalized === part.slice(0, -1) || normalized.includes(`/${part}`) || normalized.startsWith(part))) {
+    return false;
+  }
+  const fileName = basename(normalized);
+  if (fileName === ".DS_Store" || fileName.endsWith(".lockb")) {
+    return false;
+  }
+  return true;
+}
+
 function parseUnifiedDiff(content: string): DiffFile[] {
   const files: DiffFile[] = [];
   let current: DiffFile | undefined;
@@ -1342,8 +1472,10 @@ function createDiffReview(input: {
     includeUntracked: input.includeUntracked,
   });
   const files = parseUnifiedDiff(diffText);
+  const sourceFiles = collectSourceFiles(files);
   const html = renderDiffHtml({
     files,
+    sourceFiles,
     title: input.title,
     subtitle: diffSubtitle(input),
   });
@@ -1389,13 +1521,15 @@ function openDiffReviewAfterWorker(taskId: string): void {
   }
 }
 
-function renderDiffHtml(input: { files: DiffFile[]; title: string; subtitle: string }): string {
+function renderDiffHtml(input: { files: DiffFile[]; sourceFiles: SourceFile[]; title: string; subtitle: string }): string {
   const totalHunks = input.files.reduce((sum, file) => sum + file.hunks.length, 0);
   const totalLines = input.files.reduce(
     (sum, file) => sum + file.hunks.reduce((inner, hunk) => inner + hunk.lines.length, 0),
     0,
   );
   const fileNav = renderDiffTree(input.files);
+  const sourceNav = renderSourceTree(input.sourceFiles);
+  const embeddedFiles = input.sourceFiles.filter((file) => file.embedded).length;
 
   let hunkIndex = 0;
   const files = input.files.map((file, fileIndex) => {
@@ -1425,17 +1559,30 @@ function renderDiffHtml(input: { files: DiffFile[]; title: string; subtitle: str
     "<body>",
     '<aside class="sidebar">',
     `<div class="brand">ai-flow diff</div>`,
-    `<div class="summary">${input.files.length} files · ${totalHunks} hunks · ${totalLines} lines</div>`,
+    `<div class="summary">${input.files.length} changed · ${totalHunks} hunks · ${embeddedFiles}/${input.sourceFiles.length} files searchable</div>`,
+    '<label class="search"><span>Search</span><input id="review-search" type="search" placeholder="Path or file content"></label>',
+    '<div class="tabs"><button type="button" class="tab active" data-tab="changes">Changes</button><button type="button" class="tab" data-tab="files">Files</button></div>',
     '<div class="keymap"><kbd>F7</kbd> next hunk<br><kbd>Shift</kbd>+<kbd>F7</kbd> previous<br><kbd>]</kbd>/<kbd>[</kbd> fallback</div>',
-    fileNav,
+    `<div class="tab-panel" id="changes-panel">${fileNav}</div>`,
+    `<div class="tab-panel hidden" id="files-panel">${sourceNav}</div>`,
     "</aside>",
     '<main class="content">',
+    '<section id="diff-view">',
     '<div class="toolbar">',
-    `<div><h1>${escapeHtml(input.title)}</h1><p>${escapeHtml(input.subtitle)}</p></div>`,
+    `<div><h1>${escapeHtml(input.title)}</h1><p>${escapeHtml(input.subtitle)}; ${escapeHtml(String(totalLines))} diff lines</p></div>`,
     `<div class="counter"><span id="hunk-counter">0</span> / ${totalHunks}</div>`,
     "</div>",
     files || '<div class="empty">No diff to review.</div>',
+    "</section>",
+    '<section id="source-viewer" class="source-viewer hidden">',
+    '<div class="toolbar source-toolbar">',
+    '<div><h1 id="source-title">Source</h1><p id="source-meta">Select a file from the Files tab.</p></div>',
+    '<button type="button" id="back-to-diff" class="plain-button">Back to diff</button>',
+    "</div>",
+    '<div id="source-body" class="source-body empty">Select a file from the Files tab.</div>',
+    "</section>",
     "</main>",
+    `<script type="application/json" id="source-files-data">${jsonForScript(input.sourceFiles)}</script>`,
     "<script>",
     diffScript(),
     "</script>",
@@ -1445,29 +1592,31 @@ function renderDiffHtml(input: { files: DiffFile[]; title: string; subtitle: str
 }
 
 function renderHunk(file: DiffFile, hunk: DiffHunk, index: number): string {
+  const language = languageForPath(file.displayPath);
   const rows = hunk.lines.map((line) => {
     const oldNumber = line.oldLine ? String(line.oldLine) : "";
     const newNumber = line.newLine ? String(line.newLine) : "";
+    const code = highlightCodeLine(line.text, language);
     if (line.kind === "add") {
       return [
         '<tr class="line add">',
         '<td class="num old"></td><td class="code old-code"></td>',
-        `<td class="num new">${escapeHtml(newNumber)}</td><td class="code new-code"><span class="marker">+</span>${escapeHtml(line.text)}</td>`,
+        `<td class="num new">${escapeHtml(newNumber)}</td><td class="code new-code"><span class="marker">+</span>${code}</td>`,
         "</tr>",
       ].join("");
     }
     if (line.kind === "delete") {
       return [
         '<tr class="line delete">',
-        `<td class="num old">${escapeHtml(oldNumber)}</td><td class="code old-code"><span class="marker">-</span>${escapeHtml(line.text)}</td>`,
+        `<td class="num old">${escapeHtml(oldNumber)}</td><td class="code old-code"><span class="marker">-</span>${code}</td>`,
         '<td class="num new"></td><td class="code new-code"></td>',
         "</tr>",
       ].join("");
     }
     return [
       '<tr class="line context">',
-      `<td class="num old">${escapeHtml(oldNumber)}</td><td class="code old-code">${escapeHtml(line.text)}</td>`,
-      `<td class="num new">${escapeHtml(newNumber)}</td><td class="code new-code">${escapeHtml(line.text)}</td>`,
+      `<td class="num old">${escapeHtml(oldNumber)}</td><td class="code old-code">${code}</td>`,
+      `<td class="num new">${escapeHtml(newNumber)}</td><td class="code new-code">${code}</td>`,
       "</tr>",
     ].join("");
   }).join("\n");
@@ -1564,6 +1713,79 @@ function renderTreeNode(node: DiffTreeNode, depth: number): string {
   ].join("\n");
 }
 
+function renderSourceTree(files: SourceFile[]): string {
+  if (files.length === 0) {
+    return '<div class="empty-nav">No source files indexed</div>';
+  }
+
+  const root: SourceTreeNode = {
+    name: "",
+    path: "",
+    children: new Map(),
+  };
+
+  files.forEach((file) => {
+    const parts = file.path.split("/").filter(Boolean);
+    let node = root;
+    let currentPath = "";
+    for (const part of parts.slice(0, -1)) {
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      let child = node.children.get(part);
+      if (!child) {
+        child = { name: part, path: currentPath, children: new Map() };
+        node.children.set(part, child);
+      }
+      node = child;
+    }
+
+    const leafName = parts[parts.length - 1] ?? file.path;
+    node.children.set(`${leafName}\0${file.path}`, {
+      name: leafName,
+      path: file.path,
+      children: new Map(),
+      file,
+    });
+  });
+
+  return `<nav class="tree source-tree">${renderSourceChildren(root, 0)}</nav>`;
+}
+
+function renderSourceChildren(node: SourceTreeNode, depth: number): string {
+  return Array.from(node.children.values())
+    .sort((a, b) => {
+      if (Boolean(a.file) !== Boolean(b.file)) {
+        return a.file ? 1 : -1;
+      }
+      return a.name.localeCompare(b.name);
+    })
+    .map((child) => renderSourceNode(child, depth))
+    .join("\n");
+}
+
+function renderSourceNode(node: SourceTreeNode, depth: number): string {
+  if (node.file) {
+    const file = node.file;
+    const flags = [
+      file.changed ? "changed" : "",
+      file.embedded ? "" : "not embedded",
+    ].filter(Boolean).join(" · ");
+    return [
+      `<button type="button" class="file-link source-link tree-file" data-source-file="${escapeAttr(file.path)}" style="--depth:${depth}">`,
+      `<span class="status status-${file.changed ? "modified" : "source"}">${file.changed ? "diff" : "file"}</span>`,
+      `<span class="path" title="${escapeAttr(file.path)}">${escapeHtml(node.name)}</span>`,
+      `<span class="count">${escapeHtml(flags || file.language)}</span>`,
+      "</button>",
+    ].join("");
+  }
+
+  return [
+    `<details class="tree-dir source-dir" open style="--depth:${depth}">`,
+    `<summary><span class="folder-icon">▾</span><span class="path">${escapeHtml(node.name)}</span></summary>`,
+    renderSourceChildren(node, depth + 1),
+    "</details>",
+  ].join("\n");
+}
+
 function diffCss(): string {
   return `
 :root {
@@ -1580,6 +1802,12 @@ function diffCss(): string {
   --del-strong: #ffcecb;
   --active: #0969da;
   --sidebar: #ffffff;
+  --token-comment: #6a737d;
+  --token-keyword: #cf222e;
+  --token-string: #0a3069;
+  --token-number: #0550ae;
+  --token-literal: #8250df;
+  --token-tag: #116329;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -1595,6 +1823,12 @@ function diffCss(): string {
     --del-strong: #8e2c2c;
     --active: #58a6ff;
     --sidebar: #161b22;
+    --token-comment: #8b949e;
+    --token-keyword: #ff7b72;
+    --token-string: #a5d6ff;
+    --token-number: #79c0ff;
+    --token-literal: #d2a8ff;
+    --token-tag: #7ee787;
   }
 }
 * { box-sizing: border-box; }
@@ -1617,6 +1851,42 @@ body {
 }
 .brand { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
 .summary, .keymap { color: var(--muted); font-size: 12px; line-height: 1.5; margin-bottom: 14px; }
+.search {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.search input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--text);
+  background: var(--bg);
+  font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.tab, .plain-button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  color: var(--text);
+  background: var(--panel);
+  font: 12px ui-sans-serif, system-ui, sans-serif;
+  cursor: pointer;
+}
+.tab.active, .plain-button:hover {
+  border-color: var(--active);
+  color: var(--active);
+}
+.hidden { display: none !important; }
 kbd {
   display: inline-block;
   min-width: 20px;
@@ -1672,6 +1942,11 @@ kbd {
   text-decoration: none;
   border-radius: 6px;
   border: 1px solid transparent;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
 }
 .file-link:hover, .file-link.active {
   background: var(--bg);
@@ -1695,6 +1970,7 @@ kbd {
 .status-added { background: var(--add); color: #1a7f37; }
 .status-deleted { background: var(--del); color: #cf222e; }
 .status-renamed { background: #fff8c5; color: #9a6700; }
+.status-source { background: var(--line); color: var(--muted); }
 .content { min-width: 0; padding: 20px 24px 80px; }
 .toolbar {
   position: sticky;
@@ -1787,9 +2063,44 @@ h1 { margin: 0; font-size: 18px; }
 .line.delete .marker { color: #cf222e; font-weight: 700; margin-right: 6px; }
 .hunk.active .line.add .new-code { background: var(--add-strong); }
 .hunk.active .line.delete .old-code { background: var(--del-strong); }
+.tok-comment { color: var(--token-comment); font-style: italic; }
+.tok-keyword { color: var(--token-keyword); font-weight: 650; }
+.tok-string { color: var(--token-string); }
+.tok-number { color: var(--token-number); }
+.tok-literal { color: var(--token-literal); }
+.tok-tag { color: var(--token-tag); font-weight: 650; }
 .binary, .empty {
   padding: 24px;
   color: var(--muted);
+}
+.source-viewer {
+  min-height: 100vh;
+}
+.source-toolbar {
+  margin-bottom: 0;
+}
+.source-body {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: auto;
+  background: var(--panel);
+}
+.source-table {
+  width: 100%;
+  border-collapse: collapse;
+  font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.source-table td {
+  vertical-align: top;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+.source-row.search-hit .source-code {
+  background: color-mix(in srgb, var(--active) 14%, transparent);
+}
+.source-code {
+  padding: 2px 10px;
 }
 @media (max-width: 900px) {
   body { grid-template-columns: 1fr; }
@@ -1801,13 +2112,18 @@ h1 { margin: 0; font-size: 18px; }
 }
 
 function diffScript(): string {
-  return `
+  return String.raw`
 const hunks = Array.from(document.querySelectorAll('.hunk'));
-const links = Array.from(document.querySelectorAll('.file-link'));
+const links = Array.from(document.querySelectorAll('#changes-panel .file-link'));
+const sourceLinks = Array.from(document.querySelectorAll('.source-link'));
+const sourceFiles = JSON.parse(document.getElementById('source-files-data')?.textContent || '[]');
+const sourceByPath = new Map(sourceFiles.map((file) => [file.path, file]));
+const searchInput = document.getElementById('review-search');
 let current = -1;
 
 function setActive(index, shouldScroll = true) {
   if (hunks.length === 0) return;
+  showDiffView(false);
   current = ((index % hunks.length) + hunks.length) % hunks.length;
   hunks.forEach((hunk, i) => hunk.classList.toggle('active', i === current));
   const active = hunks[current];
@@ -1837,6 +2153,7 @@ document.addEventListener('keydown', (event) => {
 
 links.forEach((link) => {
   link.addEventListener('click', (event) => {
+    showDiffView(false);
     const target = Number(link.dataset.hunk);
     if (!Number.isNaN(target) && target >= 0 && target < hunks.length) {
       event.preventDefault();
@@ -1845,11 +2162,200 @@ links.forEach((link) => {
   });
 });
 
+sourceLinks.forEach((link) => {
+  link.addEventListener('click', () => {
+    const path = link.dataset.sourceFile;
+    if (path) openSourceFile(path);
+  });
+});
+
+document.querySelectorAll('.tab').forEach((button) => {
+  button.addEventListener('click', () => setTab(button.dataset.tab || 'changes'));
+});
+
+document.getElementById('back-to-diff')?.addEventListener('click', () => showDiffView(true));
+
+searchInput?.addEventListener('input', () => {
+  filterNavigation(searchInput.value);
+  const openPath = document.getElementById('source-viewer')?.dataset.openPath;
+  if (openPath) openSourceFile(openPath, false);
+});
+
 const initial = location.hash.match(/^#hunk-(\\d+)$/);
 if (initial) {
   setActive(Number(initial[1]), false);
 } else if (hunks.length > 0) {
   setActive(0, false);
+}
+
+function setTab(name) {
+  document.querySelectorAll('.tab').forEach((button) => {
+    button.classList.toggle('active', button.dataset.tab === name);
+  });
+  document.getElementById('changes-panel')?.classList.toggle('hidden', name !== 'changes');
+  document.getElementById('files-panel')?.classList.toggle('hidden', name !== 'files');
+}
+
+function showDiffView(shouldScroll) {
+  document.getElementById('source-viewer')?.classList.add('hidden');
+  document.getElementById('diff-view')?.classList.remove('hidden');
+  if (shouldScroll && current >= 0 && hunks[current]) {
+    hunks[current].scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+}
+
+function showSourceView() {
+  document.getElementById('diff-view')?.classList.add('hidden');
+  document.getElementById('source-viewer')?.classList.remove('hidden');
+  setTab('files');
+}
+
+function filterNavigation(rawQuery) {
+  const query = rawQuery.trim().toLowerCase();
+  links.forEach((link) => {
+    const path = link.dataset.file || '';
+    const source = sourceByPath.get(path);
+    const haystack = (path + '\n' + (source?.content || '')).toLowerCase();
+    link.hidden = query.length > 0 && !haystack.includes(query);
+  });
+  sourceLinks.forEach((link) => {
+    const path = link.dataset.sourceFile || '';
+    const source = sourceByPath.get(path);
+    const haystack = (path + '\n' + (source?.content || '')).toLowerCase();
+    link.hidden = query.length > 0 && !haystack.includes(query);
+  });
+  updateTreeVisibility(document.getElementById('changes-panel'), query);
+  updateTreeVisibility(document.getElementById('files-panel'), query);
+}
+
+function updateTreeVisibility(root, query) {
+  if (!root) return;
+  Array.from(root.querySelectorAll('details')).reverse().forEach((details) => {
+    const hasVisibleLeaf = Array.from(details.children).some((child) => {
+      if (child.tagName === 'SUMMARY') return false;
+      return !child.hidden;
+    });
+    details.hidden = query.length > 0 && !hasVisibleLeaf;
+    if (query.length > 0 && hasVisibleLeaf) details.open = true;
+  });
+}
+
+function openSourceFile(path, shouldSwitch = true) {
+  const file = sourceByPath.get(path);
+  if (!file) return;
+  document.getElementById('source-viewer').dataset.openPath = path;
+  sourceLinks.forEach((link) => link.classList.toggle('active', link.dataset.sourceFile === path));
+  document.getElementById('source-title').textContent = path;
+  const meta = [
+    file.language || 'text',
+    formatBytes(file.size || 0),
+    file.changed ? 'changed' : 'unchanged',
+    file.embedded ? 'searchable' : file.skippedReason || 'not embedded',
+  ].join(' · ');
+  document.getElementById('source-meta').textContent = meta;
+  const body = document.getElementById('source-body');
+  if (!file.embedded) {
+    body.className = 'source-body empty';
+    body.textContent = file.skippedReason ? 'Source preview unavailable: ' + file.skippedReason + '.' : 'Source preview unavailable.';
+    if (shouldSwitch) showSourceView();
+    return;
+  }
+  body.className = 'source-body';
+  body.innerHTML = renderSourceTable(file, searchInput?.value || '');
+  if (shouldSwitch) showSourceView();
+}
+
+function renderSourceTable(file, query) {
+  const normalizedQuery = query.trim().toLowerCase();
+  const lines = file.content.split(/\r?\n/);
+  const rows = lines.map((line, index) => {
+    const hit = normalizedQuery.length > 0 && line.toLowerCase().includes(normalizedQuery);
+    return [
+      '<tr class="source-row' + (hit ? ' search-hit' : '') + '">',
+      '<td class="num">' + String(index + 1) + '</td>',
+      '<td class="source-code">' + highlightLine(line, file.language || 'text') + '</td>',
+      '</tr>',
+    ].join('');
+  }).join('');
+  return '<table class="source-table"><tbody>' + rows + '</tbody></table>';
+}
+
+function highlightLine(text, language) {
+  if (language === 'text') return escapeHtml(text);
+  if (language === 'markup') {
+    return escapeHtml(text).replace(/(&lt;\/?)([\w:-]+)([^&]*?)(\/?&gt;)/g, '$1<span class="tok-tag">$2</span>$3$4');
+  }
+  if (language === 'markdown') {
+    const escaped = escapeHtml(text);
+    if (/^\s{0,3}#{1,6}\s/.test(text)) return '<span class="tok-keyword">' + escaped + '</span>';
+    return escaped.replace(new RegExp(String.fromCharCode(96) + '[^' + String.fromCharCode(96) + ']+' + String.fromCharCode(96), 'g'), '<span class="tok-string">$&</span>');
+  }
+  const keywords = new Set(['as','async','await','break','case','catch','class','const','continue','def','default','defer','do','else','enum','export','extends','final','finally','fn','for','from','func','function','go','if','impl','import','in','interface','let','match','module','new','package','private','protected','public','return','select','static','struct','switch','throw','try','type','val','var','while','yield']);
+  const literals = new Set(['False','None','True','false','nil','null','self','this','true','undefined']);
+  const commentPrefixes = ['python','ruby','shell','yaml','toml'].includes(language) ? ['#'] : ['//'];
+  let output = '';
+  let index = 0;
+  while (index < text.length) {
+    const rest = text.slice(index);
+    const commentPrefix = commentPrefixes.find((prefix) => rest.startsWith(prefix));
+    if (commentPrefix) {
+      output += '<span class="tok-comment">' + escapeHtml(rest) + '</span>';
+      break;
+    }
+    const char = text[index];
+    if (char === '"' || char === "'" || char === String.fromCharCode(96)) {
+      const quote = char;
+      let end = index + 1;
+      let escaped = false;
+      while (end < text.length) {
+        const currentChar = text[end];
+        if (currentChar === quote && !escaped) {
+          end += 1;
+          break;
+        }
+        escaped = currentChar === '\\' && !escaped;
+        if (currentChar !== '\\') escaped = false;
+        end += 1;
+      }
+      output += '<span class="tok-string">' + escapeHtml(text.slice(index, end)) + '</span>';
+      index = end;
+      continue;
+    }
+    const number = rest.match(/^\b\d+(?:\.\d+)?\b/);
+    if (number) {
+      output += '<span class="tok-number">' + escapeHtml(number[0]) + '</span>';
+      index += number[0].length;
+      continue;
+    }
+    const identifier = rest.match(/^[A-Za-z_$][\w$-]*/);
+    if (identifier) {
+      const value = identifier[0];
+      if (keywords.has(value)) output += '<span class="tok-keyword">' + escapeHtml(value) + '</span>';
+      else if (literals.has(value)) output += '<span class="tok-literal">' + escapeHtml(value) + '</span>';
+      else output += escapeHtml(value);
+      index += value.length;
+      continue;
+    }
+    output += escapeHtml(char);
+    index += 1;
+  }
+  return output;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  const kib = bytes / 1024;
+  if (kib < 1024) return kib.toFixed(1) + ' KiB';
+  return (kib / 1024).toFixed(1) + ' MiB';
 }
 `;
 }
@@ -2080,6 +2586,113 @@ function stripDiffPath(value: string): string {
     return value;
   }
   return value.replace(/^[ab]\//, "");
+}
+
+function languageForPath(path: string): string {
+  const lower = path.toLowerCase();
+  if (lower.endsWith(".ts") || lower.endsWith(".tsx")) return "typescript";
+  if (lower.endsWith(".js") || lower.endsWith(".jsx") || lower.endsWith(".mjs") || lower.endsWith(".cjs")) return "javascript";
+  if (lower.endsWith(".json")) return "json";
+  if (lower.endsWith(".css") || lower.endsWith(".scss") || lower.endsWith(".sass")) return "css";
+  if (lower.endsWith(".html") || lower.endsWith(".htm") || lower.endsWith(".xml") || lower.endsWith(".svg")) return "markup";
+  if (lower.endsWith(".md") || lower.endsWith(".mdx")) return "markdown";
+  if (lower.endsWith(".py")) return "python";
+  if (lower.endsWith(".rb")) return "ruby";
+  if (lower.endsWith(".go")) return "go";
+  if (lower.endsWith(".rs")) return "rust";
+  if (lower.endsWith(".java") || lower.endsWith(".kt") || lower.endsWith(".kts")) return "java";
+  if (lower.endsWith(".sh") || lower.endsWith(".bash") || lower.endsWith(".zsh")) return "shell";
+  if (lower.endsWith(".yml") || lower.endsWith(".yaml")) return "yaml";
+  if (lower.endsWith(".toml")) return "toml";
+  if (lower.endsWith(".sql")) return "sql";
+  return "text";
+}
+
+function highlightCodeLine(text: string, language: string): string {
+  if (language === "text") {
+    return escapeHtml(text);
+  }
+  if (language === "markup") {
+    return escapeHtml(text).replace(/(&lt;\/?)([\w:-]+)([^&]*?)(\/?&gt;)/g, "$1<span class=\"tok-tag\">$2</span>$3$4");
+  }
+  if (language === "markdown") {
+    const escaped = escapeHtml(text);
+    if (/^\s{0,3}#{1,6}\s/.test(text)) {
+      return `<span class="tok-keyword">${escaped}</span>`;
+    }
+    return escaped.replace(/(`[^`]+`)/g, '<span class="tok-string">$1</span>');
+  }
+
+  const keywords = new Set([
+    "as", "async", "await", "break", "case", "catch", "class", "const", "continue", "def", "default",
+    "defer", "do", "else", "enum", "export", "extends", "final", "finally", "fn", "for", "from", "func",
+    "function", "go", "if", "impl", "import", "in", "interface", "let", "match", "module", "new", "package",
+    "private", "protected", "public", "return", "select", "static", "struct", "switch", "throw", "try", "type",
+    "val", "var", "while", "yield",
+  ]);
+  const literals = new Set(["False", "None", "True", "false", "nil", "null", "self", "this", "true", "undefined"]);
+  const commentPrefixes = language === "python" || language === "ruby" || language === "shell" || language === "yaml" || language === "toml"
+    ? ["#"]
+    : ["//"];
+
+  let output = "";
+  let index = 0;
+  while (index < text.length) {
+    const rest = text.slice(index);
+    const commentPrefix = commentPrefixes.find((prefix) => rest.startsWith(prefix));
+    if (commentPrefix) {
+      output += `<span class="tok-comment">${escapeHtml(rest)}</span>`;
+      break;
+    }
+
+    const char = text[index];
+    if (char === "\"" || char === "'" || char === "`") {
+      const quote = char;
+      let end = index + 1;
+      let escaped = false;
+      while (end < text.length) {
+        const current = text[end];
+        if (current === quote && !escaped) {
+          end += 1;
+          break;
+        }
+        escaped = current === "\\" && !escaped;
+        if (current !== "\\") {
+          escaped = false;
+        }
+        end += 1;
+      }
+      output += `<span class="tok-string">${escapeHtml(text.slice(index, end))}</span>`;
+      index = end;
+      continue;
+    }
+
+    const number = rest.match(/^\b\d+(?:\.\d+)?\b/);
+    if (number) {
+      output += `<span class="tok-number">${escapeHtml(number[0])}</span>`;
+      index += number[0].length;
+      continue;
+    }
+
+    const identifier = rest.match(/^[A-Za-z_$][\w$-]*/);
+    if (identifier) {
+      const value = identifier[0];
+      if (keywords.has(value)) {
+        output += `<span class="tok-keyword">${escapeHtml(value)}</span>`;
+      } else if (literals.has(value)) {
+        output += `<span class="tok-literal">${escapeHtml(value)}</span>`;
+      } else {
+        output += escapeHtml(value);
+      }
+      index += value.length;
+      continue;
+    }
+
+    output += escapeHtml(char);
+    index += 1;
+  }
+
+  return output;
 }
 
 function isLikelyBinary(path: string): boolean {
@@ -2440,8 +3053,28 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
+function jsonForScript(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
 function escapeAttr(value: string): string {
   return escapeHtml(value);
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  const kib = bytes / 1024;
+  if (kib < 1024) {
+    return `${kib.toFixed(1)} KiB`;
+  }
+  return `${(kib / 1024).toFixed(1)} MiB`;
 }
 
 function shellQuote(value: string): string {
@@ -2501,7 +3134,8 @@ Keys in the review page:
   Shift+F7  previous changed hunk
   ] / [     fallback hunk navigation
 
-The sidebar groups changed files as a folder tree.
+The sidebar groups changed files as a folder tree. Use Search to filter paths and indexed file contents.
+The Files tab opens source previews, including unchanged files when they fit the local review budget.
 `);
 }
 
