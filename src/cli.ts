@@ -330,10 +330,10 @@ function workerPrompt(input: {
     `Branch: ${input.git.branch || "(unknown)"}`,
     "",
     "### Git Status",
-    codeBlock(input.git.status || "clean"),
+    codeBlock(truncateText(input.git.status || "clean", 5000)),
     "",
     "### Diff Stat",
-    codeBlock(input.git.diffStat || "no diff"),
+    codeBlock(truncateText(input.git.diffStat || "no diff", 3500)),
     "",
     "## Durable State",
     truncateMarkdown(input.state, 2400),
@@ -382,10 +382,10 @@ function reviewerPrompt(input: {
     `Branch: ${input.git.branch || "(unknown)"}`,
     "",
     "### Git Status",
-    codeBlock(input.git.status || "clean"),
+    codeBlock(truncateText(input.git.status || "clean", 5000)),
     "",
     "### Diff Stat",
-    codeBlock(input.git.diffStat || "no diff"),
+    codeBlock(truncateText(input.git.diffStat || "no diff", 3500)),
     "",
     "## Durable State",
     truncateMarkdown(input.state, 2200),
@@ -655,6 +655,10 @@ function summarizeForState(content: string): string {
 }
 
 function truncateMarkdown(content: string, maxChars: number): string {
+  return truncateText(content.trim(), maxChars);
+}
+
+function truncateText(content: string, maxChars: number): string {
   const trimmed = content.trim();
   if (trimmed.length <= maxChars) {
     return trimmed;
