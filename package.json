@@ -44,6 +44,7 @@
   },
   "dependencies": {
     "diff2html": "^3.4.56",
-    "electron": "^42.4.1"
+    "electron": "^42.4.1",
+    "highlight.js": "^11.11.1"
   }
 }
