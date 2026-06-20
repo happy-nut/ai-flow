@@ -37,7 +37,12 @@ if (!existsSync(options.root)) {
 app.whenReady().then(async () => {
   process.chdir(options.root);
   mkdirSync(FLOW_DIR, { recursive: true });
-  Menu.setApplicationMenu(null);
+  // Keep the standard Edit/Window roles so Cmd+C/V/X/A (copy comments into prompts) and Cmd+Q work.
+  // The in-window menu bar stays hidden on Windows/Linux via autoHideMenuBar; macOS shows it in the top bar.
+  const menuTemplate: Electron.MenuItemConstructorOptions[] = [];
+  if (process.platform === "darwin") menuTemplate.push({ role: "appMenu" });
+  menuTemplate.push({ role: "editMenu" }, { role: "windowMenu" });
+  Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate));
 
   const appIcon = nativeImage.createFromPath(iconPath);
   if (process.platform === "darwin" && app.dock && !appIcon.isEmpty()) {
