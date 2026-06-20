@@ -6,3 +6,11 @@ import { contextBridge, ipcRenderer } from "electron";
 contextBridge.exposeInMainWorld("monacoriHttp", {
   send: (request: unknown): Promise<unknown> => ipcRenderer.invoke("monacori:http-send", request),
 });
+
+// Lets the Review menu's Cmd/Ctrl+Shift+/ and +. accelerators open the merged comment views in
+// the renderer (the keys macOS would otherwise reserve for its Help search).
+contextBridge.exposeInMainWorld("monacoriMenu", {
+  onMergedView: (cb: (kind: string) => void): void => {
+    ipcRenderer.on("monacori:merged-view", (_event, kind: string) => cb(kind));
+  },
+});

@@ -39,9 +39,20 @@ app.whenReady().then(async () => {
   mkdirSync(FLOW_DIR, { recursive: true });
   // Keep the standard Edit/Window roles so Cmd+C/V/X/A (copy comments into prompts) and Cmd+Q work.
   // The in-window menu bar stays hidden on Windows/Linux via autoHideMenuBar; macOS shows it in the top bar.
+  const sendMerged = (kind: "q" | "c") => mainWindow?.webContents.send("monacori:merged-view", kind);
   const menuTemplate: Electron.MenuItemConstructorOptions[] = [];
   if (process.platform === "darwin") menuTemplate.push({ role: "appMenu" });
-  menuTemplate.push({ role: "editMenu" }, { role: "windowMenu" });
+  menuTemplate.push({ role: "editMenu" });
+  // Claim Cmd/Ctrl+Shift+/ ("?") and Cmd/Ctrl+Shift+. (">") as menu accelerators so macOS does not
+  // swallow Cmd+? for its Help search; clicking routes to the renderer's merged comment views.
+  menuTemplate.push({
+    label: "Review",
+    submenu: [
+      { label: "All questions", accelerator: "CommandOrControl+Shift+/", click: () => sendMerged("q") },
+      { label: "All change requests", accelerator: "CommandOrControl+Shift+.", click: () => sendMerged("c") },
+    ],
+  });
+  menuTemplate.push({ role: "windowMenu" });
   Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate));
 
   const appIcon = nativeImage.createFromPath(iconPath);
