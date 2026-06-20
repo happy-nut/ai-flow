@@ -9,6 +9,7 @@
 - [ ] 2.1 `findSymbolDefinition`을 인덱스 우선(현재 파일 우선) + 인덱스 미스/미완성 시 기존 전수 스캔 폴백으로 변경
 - [ ] 2.2 `Cmd/Ctrl+B` keydown 추가 → 소스 뷰에서 `goToSymbolUnderCursor`(기존 `Cmd/Ctrl+Down` 유지)
 - [ ] 2.3 입력 포커스(`input`/`textarea`/`select`) 시 억제 — 기존 캐럿 키 가드와 일관
+- [ ] 2.4 diff 뷰 `Cmd/Ctrl+B`: diff 캐럿(`diffCursor`)의 단어 추출(소스 `wordAtCursor`의 diff판) → `findSymbolDefinition` → `openSourceAt`(소스 뷰로 전환). 기존 diff `Cmd/Ctrl+Down`(`openDiffFileAtCaret`)은 유지
 
 ## 3. 검증
 

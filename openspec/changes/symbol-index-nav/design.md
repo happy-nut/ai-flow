@@ -10,10 +10,10 @@
 
 ## Decisions
 
-1. **"백그라운드 프로세스" 재해석 → 렌더러 idle 인덱싱(권장).** 소스가 이미 렌더러 메모리에 있으니 별도 프로세스/worker/IPC는 과하다(제1원칙: 가볍게). 로드 후 `requestIdleCallback`(폴백 `setTimeout`)로 인덱스를 1회 빌드 → 메인 스레드 블록 없음. *대안*: 수만 파일급 repo에서 idle 빌드가 느리면 main 프로세스나 worker thread로 승격(후속, 프로파일링 후). — 사용자가 말한 "백그라운드 프로세스"는 이 가벼운 형태로 충족된다고 본다.
+1. **"백그라운드 프로세스" 재해석 → 렌더러 idle 인덱싱.** 소스가 이미 렌더러 메모리에 있으니 별도 프로세스/worker/IPC는 과하다(제1원칙: 가볍게). 로드 후 `requestIdleCallback`(폴백 `setTimeout`)로 인덱스를 1회 빌드 → 메인 스레드 블록 없음. 사용자가 말한 "백그라운드 프로세스"는 이 가벼운 형태(렌더러 idle)로 충족된다. **별도 worker thread는 범위 밖** — idle 빌드가 실제로 느려지는 게 관측될 때만 escape hatch로 고려(현재 불필요).
 2. **인덱스 = `Map<name, [{path, lineIndex, column}]>`.** 전 임베드 파일 1회 스캔, 각 줄에 *이름 추출형* 선언 패턴 적용(기존 `definitionMatchers`를 baked-name 대신 capture-group으로 일반화 — 한 곳에서 두 형태를 만들어 일관 유지).
 3. **조회**: name → 후보 배열. 현재 파일 우선 정렬 후 첫 번째. 인덱스 미스/미완성이면 **기존 `findSymbolDefinition` 전수 스캔으로 폴백**.
-4. **`Cmd/Ctrl+B`**: 소스 뷰에서 `goToSymbolUnderCursor`(= 기존 `Cmd/Ctrl+Down`). 입력 포커스 시 억제. diff 뷰 캐럿 단어 → 선언부는 선택(후속).
+4. **`Cmd/Ctrl+B` = 보편 go-to-definition(소스 + diff, 범위 내).** 소스 뷰: `goToSymbolUnderCursor`. diff 뷰: diff 캐럿(`diffCursor`)의 단어를 추출 → `findSymbolDefinition` → `openSourceAt`(소스 뷰로 전환해 선언 표시). 기존 `Cmd/Ctrl+Down`은 각 뷰의 현재 동작 유지(소스=go-to-def, diff=`openDiffFileAtCaret` 파일 열기)로 무회귀. 입력 포커스 시 억제.
 5. **신선도**: watch로 소스가 바뀌면 페이지가 리로드되며 인덱스도 새로 빌드(자동). 증분 갱신 불필요.
 
 ## Risks / Trade-offs
@@ -28,6 +28,7 @@
 
 ## Open Questions
 
-- 이름 추출형 패턴과 per-name `definitionMatchers`를 한 소스에서 일관되게 생성하는 방식?
-- diff 뷰에서도 `Cmd/Ctrl+B`를 지원할지?
-- worker로 승격하는 repo 규모 기준(파일 수/총 라인)?
+(사용자 피드백으로 확정)
+- **diff 뷰 `Cmd/Ctrl+B` 지원: 예** — Decision 4에 반영(diff 캐럿 단어 → 선언, 소스 뷰로 전환).
+- **worker 승격: 범위 밖** — 렌더러 idle로 충분(별도 프로세스 불필요).
+- **이름 추출형 + per-name 패턴을 한 소스에서 일괄 생성: 예** — Task 1.1.

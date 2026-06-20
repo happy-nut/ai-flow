@@ -12,13 +12,17 @@
 - **THEN** 선언 위치가 전 파일 전수 스캔 없이 인덱스에서 조회된다
 
 ### Requirement: 커서 단어의 선언으로 네비게이션
-사용자는 `Cmd/Ctrl+B` 또는 `Cmd/Ctrl+Down`으로 커서 위치 단어의 선언부로 점프할 수 있어야 한다(SHALL).
+사용자는 소스 뷰와 diff 뷰 **모두에서** `Cmd/Ctrl+B`로 커서 위치 단어의 선언부로 점프할 수 있어야 한다(SHALL). 소스 뷰에서는 `Cmd/Ctrl+Down`도 동일하게 동작해야 한다(SHALL).
 
-#### Scenario: Cmd+B로 선언 점프
+#### Scenario: 소스 뷰에서 Cmd+B로 선언 점프
 - **WHEN** 소스 뷰에서 캐럿이 어떤 식별자 위에 있고 사용자가 `Cmd/Ctrl+B`를 누를 때
 - **THEN** 그 식별자의 선언이 있는 파일·줄로 캐럿과 함께 이동한다
 
-#### Scenario: Cmd+Down도 동일하게 동작
+#### Scenario: diff 뷰에서 Cmd+B로 선언 점프
+- **WHEN** diff 뷰에서 diff 캐럿이 어떤 식별자 위에 있고 사용자가 `Cmd/Ctrl+B`를 누를 때
+- **THEN** 소스 뷰로 전환되어 그 식별자의 선언이 있는 파일·줄로 이동한다
+
+#### Scenario: 소스 뷰의 Cmd+Down도 동일하게 동작
 - **WHEN** 소스 뷰에서 사용자가 `Cmd/Ctrl+Down`을 누를 때
 - **THEN** `Cmd/Ctrl+B`와 동일하게 커서 단어의 선언으로 이동한다
 
