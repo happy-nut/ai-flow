@@ -1012,7 +1012,7 @@ function renderDiffHtml(input: {
     '<div id="source-body" class="source-body empty">Select a file from the Files tab.</div>',
     "</section>",
     "</main>",
-    `<div id="app-info" class="app-info hidden" role="dialog" aria-modal="false" aria-label="About monacori"><div class="app-info-head">monacori <span class="app-info-ver">${packageVersion ? "v" + escapeHtml(packageVersion) : ""}</span></div><div id="app-info-status" class="app-info-status">Checking for updates…</div><div class="app-info-cmd"><code>npm i -g @happy-nut/monacori</code><button type="button" id="app-info-copy" class="plain-button">Copy</button></div><div class="app-info-keys"><div class="app-info-keys-h">Keyboard shortcuts</div><div class="keys-grid"><kbd>F7 / ]</kbd><span>Next change</span><kbd>Shift+F7 / [</kbd><span>Previous change</span><kbd>Shift Shift</kbd><span>Find file</span><kbd>Cmd/Ctrl+Shift+F</kbd><span>Find in files</span><kbd>Cmd/Ctrl+E</kbd><span>Recent files</span><kbd>Cmd/Ctrl+&darr;</kbd><span>Go to definition</span><kbd>Cmd/Ctrl+1 / 0</kbd><span>Files / Changes tab</span><kbd>Tab</kbd><span>Sidebar &harr; content</span><kbd>Opt/Alt+&larr;/&rarr;</kbd><span>Word jump (vim w)</span><kbd>Cmd/Ctrl+&larr;/&rarr;</kbd><span>Line start / end</span><kbd>Shift+arrows</kbd><span>Extend selection</span><kbd>&lt;</kbd><span>Toggle viewed</span><kbd>? &nbsp;&gt;</kbd><span>Add question / change</span><kbd>Cmd/Ctrl+Shift+/ .</kbd><span>All questions / changes</span><kbd>Cmd/Ctrl+Shift+W</kbd><span>Ignore whitespace</span><kbd>Cmd/Ctrl+Enter</kbd><span>Save comment</span></div></div></div>`,
+    `<div id="app-info" class="app-info hidden" role="dialog" aria-modal="false" aria-label="About monacori"><div class="app-info-head">monacori <span class="app-info-ver">${packageVersion ? "v" + escapeHtml(packageVersion) : ""}</span></div><div id="app-info-status" class="app-info-status">Checking for updates…</div><div class="app-info-cmd"><code>npm i -g @happy-nut/monacori</code><button type="button" id="app-info-copy" class="plain-button">Copy</button></div><div class="app-info-keys"><div class="app-info-keys-h">Keyboard shortcuts</div><div class="keys-grid"><kbd>F7 / ]</kbd><span>Next change</span><kbd>Shift+F7 / [</kbd><span>Previous change</span><kbd>Cmd/Ctrl+[ / ]</kbd><span>Cursor back / forward</span><kbd>Shift Shift</kbd><span>Find file</span><kbd>Cmd/Ctrl+Shift+F</kbd><span>Find in files</span><kbd>Cmd/Ctrl+E</kbd><span>Recent files</span><kbd>Cmd/Ctrl+&darr;</kbd><span>Go to definition</span><kbd>Cmd/Ctrl+1 / 0</kbd><span>Files / Changes tab</span><kbd>Tab</kbd><span>Sidebar &harr; content</span><kbd>Opt/Alt+&larr;/&rarr;</kbd><span>Word jump (vim w)</span><kbd>Cmd/Ctrl+&larr;/&rarr;</kbd><span>Line start / end</span><kbd>Shift+arrows</kbd><span>Extend selection</span><kbd>&lt;</kbd><span>Toggle viewed</span><kbd>? &nbsp;&gt;</kbd><span>Add question / change</span><kbd>Cmd/Ctrl+Shift+/ .</kbd><span>All questions / changes</span><kbd>Cmd/Ctrl+Shift+W</kbd><span>Ignore whitespace</span><kbd>Cmd/Ctrl+Enter</kbd><span>Save comment</span></div></div></div>`,
     '<div id="quick-open" class="quick-open hidden" role="dialog" aria-modal="true" aria-label="Quick open">',
     '<div class="quick-open-panel">',
     '<div class="quick-open-title"><span id="quick-open-mode">Search files</span></div>',
@@ -2354,6 +2354,12 @@ let currentHttpEnvName = (function () {
 let treeFocusIndex = -1;
 let selectionAnchor = null;
 let diffCursor = null; // { path, side: 'old'|'new', rowIndex, column } — keyboard caret in the side-by-side diff
+// Cursor-position history for Cmd/Ctrl+[ (back) and Cmd/Ctrl+] (forward), IDE-style.
+let navList = [];
+let navPos = -1;
+let navRestoring = false;
+var NAV_JUMP_LINES = 8;
+var NAV_MAX = 60;
 let diffSelectionAnchor = null; // { side, rowIndex, column } — Shift+Arrow drag-select origin in the diff
 let measuredCharWidth = 0;
 
@@ -3097,6 +3103,17 @@ document.addEventListener('keydown', (event) => {
     return;
   }
 
+  // Cmd/Ctrl+[ / ] walk the cursor-position history (back / forward), like an editor's Go Back/Forward.
+  if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && (event.key === '[' || event.key === ']')) {
+    var navEl = document.activeElement;
+    var navInField = navEl && (navEl.tagName === 'INPUT' || navEl.tagName === 'TEXTAREA' || navEl.tagName === 'SELECT');
+    if (!navInField) {
+      event.preventDefault();
+      if (event.key === '[') navBack(); else navForward();
+      return;
+    }
+  }
+
   if (event.key === 'F7') {
     event.preventDefault();
     if (!document.getElementById('source-viewer')?.classList.contains('hidden')) {
@@ -3107,10 +3124,10 @@ document.addEventListener('keydown', (event) => {
       }
     }
     next(event.shiftKey ? -1 : 1);
-  } else if (event.key === ']') {
+  } else if (event.key === ']' && !event.metaKey && !event.ctrlKey) {
     event.preventDefault();
     next(1);
-  } else if (event.key === '[') {
+  } else if (event.key === '[' && !event.metaKey && !event.ctrlKey) {
     event.preventDefault();
     next(-1);
   }
@@ -3355,6 +3372,60 @@ function setDiffCursor(path, side, rowIndex, column, reveal) {
     var r = diffRowAt(wrapper, side, ri);
     if (r && r.scrollIntoView) requestAnimationFrame(function () { try { r.scrollIntoView({ block: 'nearest' }); } catch (e) {} });
   }
+  recordNav(navEntryOf('diff'));
+}
+function navEntryOf(kind) {
+  if (kind === 'diff') {
+    if (!diffCursor) return null;
+    return { kind: 'diff', path: diffCursor.path, side: diffCursor.side, rowIndex: diffCursor.rowIndex, column: diffCursor.column, line: diffCursor.rowIndex };
+  }
+  if (!viewerCursor) return null;
+  return { kind: 'source', path: viewerCursor.path, lineIndex: viewerCursor.lineIndex, column: viewerCursor.column, line: viewerCursor.lineIndex };
+}
+function navSamePos(a, b) {
+  return !!(a && b && a.kind === b.kind && a.path === b.path && a.line === b.line && (a.kind !== 'diff' || a.side === b.side));
+}
+// Record a caret placement into the back/forward history. Contiguous small moves refresh the
+// current entry (so arrowing around does not flood it); a jump (different file or a far line)
+// pushes a new entry and drops any forward history.
+function recordNav(entry) {
+  if (navRestoring || !entry) return;
+  var cur = navPos >= 0 ? navList[navPos] : null;
+  if (navSamePos(cur, entry)) { navList[navPos] = entry; return; }
+  var small = cur && cur.kind === entry.kind && cur.path === entry.path && Math.abs(cur.line - entry.line) < NAV_JUMP_LINES;
+  if (small) { navList[navPos] = entry; return; }
+  navList = navList.slice(0, navPos + 1);
+  navList.push(entry);
+  navPos = navList.length - 1;
+  if (navList.length > NAV_MAX) { navList.shift(); navPos -= 1; }
+}
+function revealDiffFile(path) {
+  document.getElementById('source-viewer')?.classList.add('hidden');
+  document.getElementById('diff-view')?.classList.remove('hidden');
+  setTab('changes');
+  showOnlyFile(path);
+  links.forEach(function (link) { link.classList.toggle('active', link.dataset.file === path); });
+  renderBreadcrumb(document.getElementById('diff-breadcrumb'), path);
+}
+function restoreNav(entry) {
+  if (!entry) return;
+  navRestoring = true;
+  try {
+    if (entry.kind === 'diff') {
+      revealDiffFile(entry.path);
+      setDiffCursor(entry.path, entry.side, entry.rowIndex, entry.column, true);
+    } else {
+      setSourceCursor(entry.path, entry.lineIndex, entry.column, true, -1);
+    }
+  } finally {
+    navRestoring = false;
+  }
+}
+function navBack() {
+  if (navPos > 0) { navPos -= 1; restoreNav(navList[navPos]); }
+}
+function navForward() {
+  if (navPos < navList.length - 1) { navPos += 1; restoreNav(navList[navPos]); }
 }
 function applyDiffSelection() {
   var sel = window.getSelection();
@@ -4131,6 +4202,7 @@ function setSourceCursor(path, lineIndex, column, shouldReveal = false, targetLi
       document.querySelector('.source-row.cursor-line')?.scrollIntoView({ block: 'center' });
     });
   }
+  recordNav(navEntryOf('source'));
 }
 
 // Move the caret by patching only the affected line cells, never the whole <table>. This keeps
