@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, ipcMain, Menu, nativeImage } from "electron";
@@ -32,6 +33,25 @@ ipcMain.handle("monacori:get-file", (_event, request: { index?: number }) => {
 });
 // Phase 2b lazy-LOAD: serve the full source files JSON (with content) on demand.
 ipcMain.handle("monacori:get-source-data", () => currentSourceData);
+
+// Self-update: install the latest published package globally, then relaunch so the updated code loads.
+// Runs in the main process because the sandboxed renderer can't spawn npm. Returns {ok:true} (and
+// relaunches shortly after) or {ok:false,error} so the renderer can fall back to the manual command.
+ipcMain.handle("monacori:self-update", () => {
+  const result = spawnSync("npm", ["install", "-g", "@happy-nut/monacori@latest"], {
+    encoding: "utf8",
+    shell: true,
+    env: process.env,
+    timeout: 5 * 60 * 1000,
+  });
+  if ((result.status ?? 1) === 0) {
+    // Let the renderer paint "Restarting…" before we relaunch with the new code.
+    setTimeout(() => { app.relaunch(); app.exit(0); }, 500);
+    return { ok: true };
+  }
+  const detail = (result.stderr || result.stdout || (result.error && result.error.message) || "npm install failed").trim();
+  return { ok: false, error: detail.slice(-600) };
+});
 
 const iconPath = join(dirname(fileURLToPath(import.meta.url)), "..", "assets", "icon.png");
 const preloadPath = join(dirname(fileURLToPath(import.meta.url)), "preload.cjs");

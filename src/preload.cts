@@ -21,3 +21,9 @@ contextBridge.exposeInMainWorld("monacoriFile", {
   get: (index: number, kind: string): Promise<string> => ipcRenderer.invoke("monacori:get-file", { index, kind }),
   getSourceData: (): Promise<string> => ipcRenderer.invoke("monacori:get-source-data"),
 });
+
+// Self-update: ask the main process to install the latest version globally and relaunch. Only present
+// in the Electron app (not browser/watch mode), so the renderer hides the in-app update button there.
+contextBridge.exposeInMainWorld("monacoriUpdate", {
+  run: (): Promise<unknown> => ipcRenderer.invoke("monacori:self-update"),
+});

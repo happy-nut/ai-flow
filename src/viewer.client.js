@@ -1875,6 +1875,13 @@ if (window.monacoriMenu && typeof window.monacoriMenu.onMergedView === 'function
       var flag = document.getElementById('app-update-flag');
       if (flag) flag.classList.remove('hidden');
       if (status) { status.textContent = 'Update available: v' + latest; status.classList.add('has-update'); }
+      // One-click update is only possible in the Electron app (main process can spawn npm); browser/
+      // watch mode shows only the manual command. Reveal the button when both apply.
+      var ub = document.getElementById('app-info-update');
+      if (ub && window.monacoriUpdate && typeof window.monacoriUpdate.run === 'function') {
+        ub.textContent = 'Update to v' + latest + ' & Restart';
+        ub.classList.remove('hidden');
+      }
     } else if (status) {
       status.textContent = 'Up to date (v' + current + ')';
     }
@@ -1908,6 +1915,20 @@ if (window.monacoriMenu && typeof window.monacoriMenu.onMergedView === 'function
     var done = function () { copyBtn.textContent = 'Copied'; setTimeout(function () { copyBtn.textContent = 'Copy'; }, 1200); };
     if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(cmd).then(done).catch(function () {}); }
   });
+  // One-click self-update (Electron only): install latest globally via the main process, then it relaunches.
+  var updateBtn = document.getElementById('app-info-update');
+  if (updateBtn && window.monacoriUpdate && typeof window.monacoriUpdate.run === 'function') {
+    updateBtn.addEventListener('click', function () {
+      if (updateBtn.disabled) return;
+      updateBtn.disabled = true;
+      var status = document.getElementById('app-info-status');
+      if (status) { status.textContent = 'Updating… installing latest, the app will restart'; status.classList.add('has-update'); }
+      window.monacoriUpdate.run().then(function (r) {
+        if (r && r.ok) { if (status) status.textContent = 'Updated. Restarting…'; }
+        else { updateBtn.disabled = false; if (status) status.textContent = 'Update failed — run the command below manually.'; }
+      }).catch(function () { updateBtn.disabled = false; if (status) status.textContent = 'Update failed — run the command below manually.'; });
+    });
+  }
   document.addEventListener('click', function (e) {
     if (panel.classList.contains('hidden')) return;
     if (panel.contains(e.target) || btn.contains(e.target)) return;
