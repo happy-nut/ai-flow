@@ -716,25 +716,33 @@ h1 { margin: 0; font-size: 18px; }
 .mc-thread-cell { padding: 4px 12px 8px 64px; }
 .source-table .mc-thread-cell { padding: 4px 12px 8px 66px; }
 .mc-card {
-  border: 1px solid var(--border); border-left: 3px solid var(--muted);
-  border-radius: 6px; background: var(--panel); margin: 6px 0; max-width: 760px;
+  border: 1px solid var(--border);
+  border-radius: 8px; background: var(--panel); margin: 8px 0; max-width: 760px;
   font: 12px/1.5 Monaco, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
 }
-.mc-card.mc-q { border-left-color: var(--token-number); }
-.mc-card.mc-c { border-left-color: var(--token-tag); }
-.mc-card-head { display: flex; align-items: center; gap: 8px; padding: 5px 9px; border-bottom: 1px solid var(--border); color: var(--muted); }
-.mc-kind { font-weight: 650; color: var(--text); }
-.mc-del { margin-left: auto; background: transparent; border: 0; color: var(--muted); cursor: pointer; font-size: 15px; line-height: 1; padding: 0 2px; }
-.mc-del:hover { color: var(--del-strong); }
-.mc-card-body { padding: 7px 10px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Question vs change-request is a small colored pill on the kind label — no heavy left bar. */
+.mc-card-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px 6px; color: var(--muted); }
+.mc-kind {
+  font-weight: 700; font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase;
+  padding: 2px 8px; border-radius: 999px;
+  color: var(--muted); background: color-mix(in srgb, var(--muted) 16%, transparent);
+}
+.mc-card.mc-q .mc-kind { color: var(--token-number); background: color-mix(in srgb, var(--token-number) 18%, transparent); }
+.mc-card.mc-c .mc-kind { color: var(--token-tag); background: color-mix(in srgb, var(--token-tag) 18%, transparent); }
+.mc-del { margin-left: auto; background: transparent; border: 0; color: var(--muted); cursor: pointer; font-size: 15px; line-height: 1; padding: 1px 5px; border-radius: 5px; }
+.mc-del:hover { color: var(--del-strong); background: color-mix(in srgb, var(--del-strong) 16%, transparent); }
+.mc-card-body { padding: 2px 12px 11px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
 .mc-input {
   display: block; box-sizing: border-box; resize: vertical;
-  margin: 8px 10px; width: calc(100% - 20px); min-height: 56px;
+  margin: 0 10px 10px; width: calc(100% - 20px); min-height: 60px;
   background: var(--bg); color: var(--text);
-  border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px;
-  font: 12px/1.5 Monaco, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  border: 1px solid var(--border); border-radius: 7px; padding: 9px 11px;
+  font: 12px/1.55 Monaco, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
 }
-.mc-input:focus { outline: none; border-color: var(--active); }
+.mc-input:focus { outline: none; border-color: var(--active); box-shadow: 0 0 0 3px color-mix(in srgb, var(--active) 22%, transparent); }
 .mc-actions { display: flex; align-items: center; gap: 8px; padding: 0 10px 9px; }
 .mc-btn { background: var(--active); color: #fff; border: 0; border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
 .mc-btn:hover { filter: brightness(1.1); }

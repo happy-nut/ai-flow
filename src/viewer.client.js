@@ -1887,10 +1887,6 @@ function openMergedView(kind) {
   head.className = 'mc-modal-head';
   var title = document.createElement('span');
   title.textContent = kind === 'q' ? t('merged.qTitle') : t('merged.cTitle');
-  var copyBtn = document.createElement('button');
-  copyBtn.type = 'button';
-  copyBtn.className = 'mc-btn';
-  copyBtn.textContent = t('merged.copyAll');
   var closeBtn = document.createElement('button');
   closeBtn.type = 'button';
   closeBtn.className = 'mc-btn mc-ghost';
@@ -1899,17 +1895,24 @@ function openMergedView(kind) {
   area.className = 'mc-modal-text';
   area.readOnly = true;
   area.value = buildMergedText(kind);
-  copyBtn.addEventListener('click', function () {
-    area.focus(); area.select();
-    var ok = false;
-    try { ok = document.execCommand('copy'); } catch (e) {}
-    if (navigator.clipboard && navigator.clipboard.writeText) { try { navigator.clipboard.writeText(area.value); ok = true; } catch (e) {} }
-    copyBtn.textContent = ok ? t('merged.copied') : t('merged.copyFailed');
-    setTimeout(function () { copyBtn.textContent = t('merged.copyAll'); }, 1500);
-  });
   closeBtn.addEventListener('click', function () { modal.remove(); });
+  // Terminal send (Electron, terminal open): close the modal and hand off to pane-pick mode ON the
+  // terminal — the chosen pane is highlighted, the rest dimmed, arrows change the choice, Enter sends.
+  // One button here; the actual pick happens visually over the live claude/codex sessions.
+  var sendBtn = null;
+  if (window.__monacoriTerminal && typeof window.__monacoriTerminal.isOpen === 'function' && window.__monacoriTerminal.isOpen()) {
+    sendBtn = document.createElement('button');
+    sendBtn.type = 'button';
+    sendBtn.className = 'mc-btn mc-send-term';
+    sendBtn.textContent = t('merged.sendToTerminal');
+    sendBtn.addEventListener('click', function () {
+      var text = buildMergedText(kind);
+      modal.remove();
+      window.__monacoriTerminal.enterSendMode(text);
+    });
+  }
   head.appendChild(title);
-  head.appendChild(copyBtn);
+  if (sendBtn) head.appendChild(sendBtn);
   head.appendChild(closeBtn);
   panel.appendChild(head);
   panel.appendChild(area);
@@ -1917,7 +1920,19 @@ function openMergedView(kind) {
   modal.addEventListener('mousedown', function (e) { if (e.target === modal) modal.remove(); });
   modal.addEventListener('keydown', function (e) { if (e.key === 'Escape') { e.preventDefault(); modal.remove(); } });
   document.body.appendChild(modal);
-  requestAnimationFrame(function () { area.focus(); area.select(); });
+  // Focus the send button (Enter starts pane-pick) when present, else the read-only text. Electron
+  // async-restores focus to <body>, so retry briefly (same as the composer).
+  var modalFocusTarget = sendBtn || area;
+  var modalFocusTries = 0;
+  var tryFocusModal = function () {
+    if (!document.getElementById('mc-modal')) return true;
+    if (document.activeElement === modalFocusTarget) return true;
+    try { modalFocusTarget.focus(); if (modalFocusTarget === area) modalFocusTarget.select(); } catch (e) {}
+    return document.activeElement === modalFocusTarget;
+  };
+  if (!tryFocusModal()) {
+    var modalFocusIv = setInterval(function () { if (tryFocusModal() || ++modalFocusTries > 12) clearInterval(modalFocusIv); }, 25);
+  }
 }
 
 document.addEventListener('click', function (event) {
