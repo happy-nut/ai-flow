@@ -120,13 +120,21 @@ const sourceFiles = JSON.parse(document.getElementById('source-files-data')?.tex
 // whole UI switches live (no reload). t() feeds dynamically-built text; applyI18n() rewrites the static
 // chrome (data-i18n / -ph / -title / -aria). English is the first-paint default.
 var I18N = JSON.parse(document.getElementById('i18n-data')?.textContent || '{}');
+// Cross-reopen persistence. Electron persists via the main process (window.monacoriSettings — survives
+// app restart; file:// localStorage doesn't); browser/serve falls back to localStorage. persistRead
+// returns the bridge value (native) if present, else undefined so callers parse localStorage themselves.
+function persistRead(key) {
+  try { if (window.monacoriSettings && window.monacoriSettings.all && key in window.monacoriSettings.all) return window.monacoriSettings.all[key]; } catch (e) {}
+  return undefined;
+}
+function persistSave(key, value) {
+  try { localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value)); } catch (e) {}
+  try { if (window.monacoriSettings) window.monacoriSettings.set(key, value); } catch (e2) {}
+}
 var LOCALE_KEY = 'monacori-locale';
-// Electron persists the locale via the main process (window.monacoriSettings) because file:// localStorage
-// is not kept across app restarts; browser/serve mode has no bridge and falls back to localStorage.
 var locale = (function () {
-  var v = null;
-  try { if (window.monacoriSettings && window.monacoriSettings.all) v = window.monacoriSettings.all[LOCALE_KEY]; } catch (e) {}
-  if (v !== 'ko' && v !== 'en') { try { v = localStorage.getItem(LOCALE_KEY); } catch (e2) {} }
+  var v = persistRead(LOCALE_KEY);
+  if (v !== 'ko' && v !== 'en') { try { v = localStorage.getItem(LOCALE_KEY); } catch (e) {} }
   return (v === 'ko' || v === 'en') ? v : 'en';
 })();
 function t(key) { var m = (I18N[locale] || I18N.en || {}); return (m && key in m) ? m[key] : ((I18N.en && I18N.en[key]) || key); }
@@ -226,7 +234,7 @@ let measuredCharWidth = 0;
 // restoreUiState()/openDefaultSourceFile() run on startup and try to render them.
 var COMMENTS_KEY = 'monacori-comments:' + location.pathname;
 var reviewComments = [];
-try { reviewComments = JSON.parse(localStorage.getItem(COMMENTS_KEY) || '[]'); } catch (commentsErr) { reviewComments = []; }
+reviewComments = (function () { var b = persistRead(COMMENTS_KEY); if (Array.isArray(b)) return b; try { return JSON.parse(localStorage.getItem(COMMENTS_KEY) || '[]'); } catch (commentsErr) { return []; } })();
 if (!Array.isArray(reviewComments)) reviewComments = [];
 var commentSeq = reviewComments.reduce(function (max, c) { return Math.max(max, c.seq || 0); }, 0);
 var composerState = null;
@@ -1579,7 +1587,7 @@ function handleDiffCaretKey(event) {
 // ===== Review comments: questions ("?") and change-requests (">") =====
 // (COMMENTS_KEY / reviewComments / commentSeq / composerState are declared near the top of the script)
 function saveComments() {
-  try { localStorage.setItem(COMMENTS_KEY, JSON.stringify(reviewComments)); } catch (e) {}
+  persistSave(COMMENTS_KEY, reviewComments);
 }
 function commentsAt(path, line) {
   return reviewComments.filter(function (c) { return c.path === path && c.line === line; });
@@ -1844,7 +1852,7 @@ function defaultMergePrompt(kind) {
 }
 var mergePromptsKey = 'monacori-merge-prompts';
 function loadMergePrompts() {
-  try { var v = JSON.parse(localStorage.getItem(mergePromptsKey) || '{}'); return (v && typeof v === 'object') ? v : {}; } catch (e) { return {}; }
+  var b = persistRead(mergePromptsKey); if (b && typeof b === 'object') return b; try { var v = JSON.parse(localStorage.getItem(mergePromptsKey) || '{}'); return (v && typeof v === 'object') ? v : {}; } catch (e) { return {}; }
 }
 function mergePromptFor(kind) {
   var v = loadMergePrompts()[kind];
@@ -1853,7 +1861,7 @@ function mergePromptFor(kind) {
 function saveMergePrompt(kind, text) {
   var saved = loadMergePrompts();
   if (text && text.trim()) saved[kind] = text; else delete saved[kind];
-  try { localStorage.setItem(mergePromptsKey, JSON.stringify(saved)); } catch (e) {}
+  persistSave(mergePromptsKey, saved);
 }
 
 function buildMergedText(kind) {
@@ -2320,8 +2328,7 @@ if (window.monacoriMenu && typeof window.monacoriMenu.onCloseTab === 'function')
       var next = langSel.value === 'ko' ? 'ko' : 'en';
       if (next === locale) return;
       locale = next;
-      try { localStorage.setItem(LOCALE_KEY, locale); } catch (e) {}
-      try { if (window.monacoriSettings) window.monacoriSettings.set(LOCALE_KEY, locale); } catch (e2) {}
+      persistSave(LOCALE_KEY, locale);
       applyI18n();
       // Merge-prompt placeholders are locale-dependent defaults; refresh them while the panel is open.
       fill();
