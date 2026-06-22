@@ -141,7 +141,7 @@ export const MESSAGES: Record<string, Record<string, string>> = {
 
     // Review status (toolbar)
     "status.files": "개 파일",
-    "status.hunks": "개 헝크",
+    "status.hunks": "개 변경 묶음",
     "status.wsIgnored": "공백 무시",
     "status.wsIgnored.title": "공백 무시 — Cmd/Ctrl+Shift+W",
     "status.indexed": "개 인덱싱됨",
@@ -149,7 +149,7 @@ export const MESSAGES: Record<string, Record<string, string>> = {
     "status.indexing": "인덱싱 중",
     "status.watching": "감시 중",
     "status.live.updated": "실시간: 업데이트됨",
-    "status.live.waiting": "실시간: 차이 서버 대기 중",
+    "status.live.waiting": "실시간: diff 서버 대기 중",
 
     // Diff view
     "btn.viewed": "확인함",
@@ -161,7 +161,7 @@ export const MESSAGES: Record<string, Record<string, string>> = {
     "source.selectFile": "파일 탭에서 파일을 선택하세요.",
     "http.env.title": "HTTP 클라이언트 환경",
     "http.env.aria": "HTTP 환경",
-    "btn.diff": "변경",
+    "btn.diff": "Diff",
     "source.loading": "소스 불러오는 중…",
     "source.previewUnavailable": "소스 미리보기를 사용할 수 없습니다.",
     "source.buildingTree": "파일 트리 만드는 중…",
@@ -243,8 +243,9 @@ export const MESSAGES: Record<string, Record<string, string>> = {
     "merged.copied": "복사됨",
     "merged.copyFailed": "복사 실패",
     "merged.close": "닫기",
-    "merged.qHeading": "# 질문",
-    "merged.cHeading": "# 변경 요청",
+    // Structural markers stay English in both locales (the preamble prose below follows the locale).
+    "merged.qHeading": "# Questions",
+    "merged.cHeading": "# Change requests",
 
     // Merge-prompt default agent contracts (Korean default for Korean users)
     "mergePrompt.default.q": "다음은 방금 작성한 코드에 대한 질문입니다. 각 질문에 답하면서 의도, 근거, 맥락을 설명하세요. 코드는 변경하지 마세요. 이 단계는 수정에 앞서 이해를 명확히 하기 위한 것입니다.",
