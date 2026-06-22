@@ -142,10 +142,9 @@ body {
   font-size: 11px;
   color: var(--muted);
 }
-.sidebar-footer .app-version { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sidebar-footer .app-version { margin-right: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .app-update-flag { color: var(--active); font-weight: 600; cursor: pointer; white-space: nowrap; }
 .settings-btn {
-  margin-left: auto;
   flex: none;
   border: 1px solid transparent;
   border-radius: 6px;
@@ -156,7 +155,7 @@ body {
   padding: 3px 6px;
   cursor: pointer;
 }
-.settings-btn:hover { color: var(--active); border-color: var(--border); }
+.settings-btn:hover { color: var(--text); background: color-mix(in srgb, var(--active) 12%, transparent); }
 .app-info {
   position: fixed;
   left: 12px;

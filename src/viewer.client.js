@@ -2301,7 +2301,12 @@ if (window.monacoriMenu && typeof window.monacoriMenu.onCloseTab === 'function')
   modal.addEventListener('click', function (e) { if (e.target === modal) close(); });
   // Capture so closing settings wins over other Escape handlers (lightbox / composer).
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && !modal.classList.contains('hidden')) { e.stopPropagation(); e.preventDefault(); close(); }
+    if (e.key === 'Escape' && !modal.classList.contains('hidden')) { e.stopPropagation(); e.preventDefault(); close(); return; }
+    // Cmd/Ctrl+, (the standard "Preferences" accelerator) toggles the settings panel from anywhere.
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key === ',' || e.code === 'Comma')) {
+      e.preventDefault(); e.stopPropagation();
+      if (modal.classList.contains('hidden')) open('general'); else close();
+    }
   }, true);
   // One-click self-update (Electron only): install latest globally via the main process, then relaunch.
   if (updateBtn && window.monacoriUpdate && typeof window.monacoriUpdate.run === 'function') {
