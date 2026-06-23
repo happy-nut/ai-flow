@@ -2138,7 +2138,12 @@ refreshComments();
       // 2+ panes: dim every pane but the active one (no border, just a clean focus cue). A lone pane stays full.
       q.el.classList.toggle('is-inactive', panes.length > 1 && q !== p);
     });
-    if (p) requestAnimationFrame(function () { try { p.term.focus(); } catch (e) {} });
+    if (p) requestAnimationFrame(function () {
+      try {
+        if (p.labelEl && p.labelEl.getAttribute('contenteditable') === 'true') return;
+        p.term.focus();
+      } catch (e) {}
+    });
   }
 
   function makePane() {
