@@ -92,6 +92,20 @@ export function splitDiffForLazy(diffHtml: string, files: DiffFile[]): { contain
   return { container: shells.join("\n"), islands: islands.join("\n"), bodies };
 }
 
+// The toolbar's review-status row (file/hunk counts, index + live status). Extracted so the in-place
+// update path can re-render just this strip; renderDiffHtml wraps it in <div class="review-status">.
+export function renderReviewStatus(input: {
+  files: number;
+  hunks: number;
+  embeddedFiles: number;
+  sourceFileCount: number;
+  ignoreWhitespace?: boolean;
+  watch?: boolean;
+  generatedAt?: string;
+}): string {
+  return `<span>${input.files} <span data-i18n="status.files">files</span></span><span>${input.hunks} <span data-i18n="status.hunks">hunks</span></span>${input.ignoreWhitespace ? '<span class="ws-ignored" data-i18n="status.wsIgnored" data-i18n-title="status.wsIgnored.title" title="Whitespace ignored — Cmd/Ctrl+Shift+W">ws ignored</span>' : ""}<span class="index-status" id="index-status" data-i18n-title="status.index.title" title="Go-to-definition index">${input.embeddedFiles}/${input.sourceFileCount} indexed</span><span class="index-progress hidden" id="index-progress" aria-hidden="true"><span class="index-progress-bar"></span></span><span class="live-status ${input.watch ? "watching" : ""}" id="live-status"${input.watch ? ' data-i18n="status.watching"' : ""}>${input.watch ? "watching" : escapeHtml(input.generatedAt ?? new Date().toISOString())}</span>`;
+}
+
 export function renderDiffHtml(input: {
   files: DiffFile[];
   diffHtml: string;
@@ -131,6 +145,8 @@ export function renderDiffHtml(input: {
     "</style>",
     "</head>",
     "<body>",
+    // Boot overlay (removed by the renderer once bootstrap has painted) covers the blank gap after loadFile.
+    '<div id="boot-overlay"><div class="boot-spinner"></div><div>monacori</div></div>',
     '<aside class="sidebar" aria-label="Review navigation">',
     '<div class="sidebar-scroll">',
     `<div class="sidebar-brand" title="${escapeAttr(input.projectPath)}"><span class="brand-mark">monacori</span><span class="brand-project">${escapeHtml(input.projectName)}</span></div>`,
@@ -151,7 +167,7 @@ export function renderDiffHtml(input: {
     '<section id="diff-view" class="hidden">',
     '<div class="toolbar">',
     '<div class="breadcrumb" id="diff-breadcrumb"></div>',
-    `<div class="review-status"><span>${input.files.length} <span data-i18n="status.files">files</span></span><span>${totalHunks} <span data-i18n="status.hunks">hunks</span></span>${input.ignoreWhitespace ? '<span class="ws-ignored" data-i18n="status.wsIgnored" data-i18n-title="status.wsIgnored.title" title="Whitespace ignored — Cmd/Ctrl+Shift+W">ws ignored</span>' : ""}<span class="index-status" id="index-status" data-i18n-title="status.index.title" title="Go-to-definition index">${embeddedFiles}/${input.sourceFiles.length} indexed</span><span class="index-progress hidden" id="index-progress" aria-hidden="true"><span class="index-progress-bar"></span></span><span class="live-status ${input.watch ? "watching" : ""}" id="live-status"${input.watch ? ' data-i18n="status.watching"' : ""}>${input.watch ? "watching" : escapeHtml(input.generatedAt ?? new Date().toISOString())}</span></div>`,
+    `<div class="review-status">${renderReviewStatus({ files: input.files.length, hunks: totalHunks, embeddedFiles, sourceFileCount: input.sourceFiles.length, ignoreWhitespace: input.ignoreWhitespace, watch: input.watch, generatedAt: input.generatedAt })}</div>`,
     '<button type="button" id="diff-viewed-toggle" class="diff-viewed-toggle" aria-pressed="false" data-i18n="btn.viewed" data-i18n-title="btn.viewed.title" title="Toggle viewed (<)" hidden>Viewed</button>',
     "</div>",
     `<div id="diff2html-container" class="diff2html-container">${input.diffHtml || '<div class="empty" data-i18n="diff.noDiff">No diff to review.</div>'}</div>`,
@@ -230,7 +246,7 @@ export function renderDiffHtml(input: {
     '<kbd>Ctrl+`</kbd><span data-i18n="kbd.toggleTerminal">Toggle terminal</span>' +
     '<kbd>Cmd/Ctrl+D</kbd><span data-i18n="kbd.splitPane">Split pane</span>' +
     '<kbd>Cmd/Ctrl+Alt+[ / ]</kbd><span data-i18n="kbd.focusPane">Focus prev / next pane</span>' +
-    '<kbd>F2</kbd><span data-i18n="kbd.renamePane">Rename pane</span>' +
+    '<kbd>Cmd/Ctrl+Alt+R</kbd><span data-i18n="kbd.renamePane">Rename pane</span>' +
     '<kbd>Cmd/Ctrl+W</kbd><span data-i18n="kbd.closeTerminal">Close terminal (when focused)</span>' +
     '</div>' +
     '</div>',
@@ -265,7 +281,7 @@ export function renderDiffHtml(input: {
   ].join("\n");
 }
 
-function renderDiffTree(files: DiffFile[]): string {
+export function renderDiffTree(files: DiffFile[]): string {
   if (files.length === 0) {
     return '<div class="empty-nav">No changed files</div>';
   }
@@ -297,7 +313,7 @@ function renderDiffTree(files: DiffFile[]): string {
   return `<nav class="tree changes-flat">${rows.join("")}</nav>`;
 }
 
-function renderSourceTree(files: SourceFile[]): string {
+export function renderSourceTree(files: SourceFile[]): string {
   if (files.length === 0) {
     return '<div class="empty-nav">No source files indexed</div>';
   }
@@ -433,7 +449,7 @@ function renderSourceNode(node: SourceTreeNode, depth: number): string {
 
   return [
     `<details class="tree-dir source-dir" data-dir="${escapeAttr(labelNode.path)}" style="--depth:${depth}">`,
-    `<summary><span class="folder-icon">v</span><span class="path">${escapeHtml(names.join("/"))}</span></summary>`,
+    `<summary><span class="folder-icon"><svg class="folder-ic fi-closed" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg><svg class="folder-ic fi-open" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H21a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg></span><span class="path">${escapeHtml(names.join("/"))}</span></summary>`,
     renderSourceChildren(labelNode, depth + 1),
     "</details>",
   ].join("\n");

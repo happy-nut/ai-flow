@@ -184,7 +184,7 @@ function loadSourceData() {
     }
     sourceLoaded = true;
     sourceLoading = false;
-    try { startSymbolIndex(); } catch (e) {}
+    scheduleSymbolIndex();
     if (pendingSourceOpen) { var po = pendingSourceOpen; pendingSourceOpen = null; openSourceFile(po.path, po.shouldSwitch); }
     else if (isSourceViewerVisible() && document.getElementById('source-viewer').dataset.openPath) { openSourceFile(document.getElementById('source-viewer').dataset.openPath, false); }
     if (pendingSymbol) { var s = pendingSymbol; pendingSymbol = null; goToDefOrUsages(s); }
@@ -455,14 +455,26 @@ function scheduleDiffScroll(row) {
   });
 }
 
+var setActiveRaf = 0, setActiveScrollPending = true;
 function setActive(index, shouldScroll = true) {
   if (hunkTotal() === 0) return;
   current = ((index % hunkTotal()) + hunkTotal()) % hunkTotal();
+  // Coalesce rapid presses (holding/spamming F7 or Shift+F7) into one DOM apply per animation frame. The
+  // key handler returns immediately and `current` updates synchronously (so next()/nav math stays correct),
+  // while the heavy DOM work (full link/wrapper sweeps, body materialize) runs at most once per frame
+  // instead of once per keystroke — the input queue never blocks and can't pile up on big repos.
+  setActiveScrollPending = shouldScroll;
+  if (setActiveRaf) return;
+  setActiveRaf = requestAnimationFrame(function () {
+    setActiveRaf = 0;
+    applySetActive(current, setActiveScrollPending);
+  });
+}
+function applySetActive(idx, shouldScroll) {
   document.getElementById('source-viewer')?.classList.add('hidden');
   document.getElementById('diff-view')?.classList.remove('hidden');
   setTab('changes');
-  const file = hunkPathAt(current);
-  const idx = current;
+  const file = hunkPathAt(idx);
   links.forEach((link) => link.classList.toggle('active', link.dataset.file === file));
   renderBreadcrumb(document.getElementById('diff-breadcrumb'), file);
   var dvt = document.getElementById('diff-viewed-toggle');
@@ -1222,7 +1234,7 @@ document.addEventListener('copy', handleSourceCopy);
 
 applyI18n(); // first paint already shows English (inline); this swaps to the saved locale before the rest of init renders dynamic text
 populateHttpEnvSelect();
-if (!REVIEW_LAZY_LOAD) setTimeout(startSymbolIndex, 0); // non-lazy indexes now; lazy-LOAD defers the (large) source blob + index to the first source-view open / go-to-def
+if (!REVIEW_LAZY_LOAD) scheduleSymbolIndex(); // non-lazy indexes when idle; lazy-LOAD defers the (large) source blob + index to the first source-view open / go-to-def
 const restored = restoreUiState();
 if (!restored) {
   const initial = location.hash.match(/^#hunk-(\d+)$/);
@@ -1233,6 +1245,19 @@ if (!restored) {
 initSourceTreeFolds();
 if (watchEnabled) setInterval(checkForLiveUpdate, 1500);
 window.addEventListener('beforeunload', saveUiState);
+
+// First render has painted — drop the boot overlay (it bridged the blank gap right after loadFile). Two
+// rAFs so the spinner stays until the diff/tree are actually on screen, then a short fade-out.
+(function () {
+  var ov = document.getElementById('boot-overlay');
+  if (!ov) return;
+  requestAnimationFrame(function () {
+    requestAnimationFrame(function () {
+      ov.classList.add('hide');
+      setTimeout(function () { ov.remove(); }, 240);
+    });
+  });
+})();
 
 (function setupSidebarResize() {
   const resizer = document.querySelector('.sidebar-resizer');
@@ -2174,8 +2199,18 @@ refreshComments();
     if (el.getAttribute('contenteditable') === 'true') return;
     setActive(pane);
     el.contentEditable = 'true';
-    el.focus();
-    try { var range = document.createRange(); range.selectNodeContents(el); var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range); } catch (e) {}
+    // Electron asynchronously restores focus to <body> after the keydown, so a one-shot focus loses the
+    // race and the label turns editable but never gets the caret — retry until it sticks, then select all
+    // (same pattern as the composer/memo). This is why rename "did nothing" before.
+    var renameTries = 0;
+    var focusLabel = function () {
+      if (el.getAttribute('contenteditable') !== 'true') return true; // finished/cancelled meanwhile
+      try { el.focus(); } catch (e) {}
+      if (document.activeElement !== el) return false;
+      try { var range = document.createRange(); range.selectNodeContents(el); var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range); } catch (e) {}
+      return true;
+    };
+    if (!focusLabel()) { var renameIv = setInterval(function () { if (focusLabel() || ++renameTries > 12) clearInterval(renameIv); }, 25); }
     function finish(commit) {
       el.removeEventListener('keydown', onKey);
       el.removeEventListener('blur', onBlur);
@@ -2587,17 +2622,12 @@ function restoreUiState() {
   return false;
 }
 
-// In-place diff refresh (instead of a full window reload): take a freshly built review HTML, transplant
-// only the diff/sidebar/data nodes, and re-run the bootstrap steps. Because the window never reloads, the
-// integrated terminal's pty sessions (claude/codex) survive a watch refresh. Electron's main process pushes
-// the HTML over IPC (monacori:diff-update); serve mode's poller fetches /review and calls the same path.
-function applyDiffUpdate(html) {
-  if (!html) return false;
-  var doc;
-  try { doc = new DOMParser().parseFromString(html, 'text/html'); } catch (e) { return false; }
-  var newMeta = doc.getElementById('review-meta');
-  var newSig = (newMeta && newMeta.getAttribute('data-signature')) || '';
-  if (!newSig || newSig === currentSignature) return false; // unchanged or unparseable — nothing to do
+// In-place diff refresh (instead of a full window reload): apply a compact payload of just the changed
+// regions (diff container, sidebar trees, status, data) and re-run the bootstrap steps. The window never
+// reloads, so the integrated terminal's pty sessions (claude/codex) survive a watch refresh. Electron's
+// main pushes the payload over IPC (monacori:diff-update); serve mode's poller fetches /__ai_flow_update.
+function applyDiffUpdate(u) {
+  if (!u || !u.signature || u.signature === currentSignature) return false; // unchanged — nothing to do
 
   // Remember what to restore after the swap (comments/viewed persist on their own; these don't).
   var sv = document.getElementById('source-viewer');
@@ -2606,39 +2636,32 @@ function applyDiffUpdate(html) {
   var container = document.getElementById('diff2html-container');
   var diffScrollTop = container ? container.scrollTop : 0;
 
-  // 1) Swap the JSON data islands' text (re-parsed below) + refresh review-meta's dataset.
-  ['file-state-data', 'source-files-data', 'http-env-data', 'files-tree-html'].forEach(function (id) {
-    var cur = document.getElementById(id), next = doc.getElementById(id);
-    if (cur && next) cur.textContent = next.textContent;
-  });
-  if (reviewMeta && newMeta) {
-    ['data-signature', 'data-generated-at', 'data-watch', 'data-lazy', 'data-lazy-load'].forEach(function (a) {
-      if (newMeta.hasAttribute(a)) reviewMeta.setAttribute(a, newMeta.getAttribute(a));
-    });
-  }
+  // 1) Replace the visible regions straight from the payload (no full-HTML parse).
+  if (container) container.innerHTML = u.diffContainer || '';
+  var changesPanel = document.getElementById('changes-panel');
+  if (changesPanel) changesPanel.innerHTML = u.changesPanel || '';
+  // Files tree: keep the inert island (lazy, not yet opened) in sync, and refresh the live panel when it's
+  // already materialized — or always, in eager mode where the panel holds the tree directly.
+  var filesIsland = document.getElementById('files-tree-html');
+  if (filesIsland) filesIsland.textContent = u.filesTree || '';
+  var filesPanel = document.getElementById('files-panel');
+  if (filesPanel && (!REVIEW_LAZY || filesPanel.innerHTML.trim())) filesPanel.innerHTML = u.filesTree || '';
+  var statusEl = document.querySelector('.review-status');
+  if (statusEl) statusEl.innerHTML = u.reviewStatus || '';
+  if (reviewMeta) { reviewMeta.setAttribute('data-signature', u.signature); if (u.generatedAt) reviewMeta.setAttribute('data-generated-at', u.generatedAt); }
 
-  // 2) Replace the visible regions: diff container, sidebar trees, the review-status counts.
-  var newContainer = doc.getElementById('diff2html-container');
-  if (container && newContainer) container.innerHTML = newContainer.innerHTML;
-  ['changes-panel', 'files-panel'].forEach(function (id) {
-    var cur = document.getElementById(id), next = doc.getElementById(id);
-    if (cur && next) cur.innerHTML = next.innerHTML;
-  });
-  var curStatus = document.querySelector('.review-status'), nextStatus = doc.querySelector('.review-status');
-  if (curStatus && nextStatus) curStatus.innerHTML = nextStatus.innerHTML;
-
-  // 3) Re-derive the module-level state from the swapped data islands.
-  fileStates = JSON.parse(document.getElementById('file-state-data')?.textContent || '[]');
+  // 2) Re-derive module-level state directly from the payload objects.
+  fileStates = u.fileStates || [];
   fileSignatureByPath = new Map(fileStates.map(function (f) { return [f.path, f.signature]; }));
-  sourceFiles = JSON.parse(document.getElementById('source-files-data')?.textContent || '[]');
+  sourceFiles = u.sourceFilesMeta || [];
   sourceByPath = new Map(sourceFiles.map(function (f) { return [f.path, f]; }));
-  httpEnvironments = JSON.parse(document.getElementById('http-env-data')?.textContent || '{}');
+  httpEnvironments = u.httpEnvironments || {};
   httpEnvNames = Object.keys(httpEnvironments);
-  currentSignature = newSig;
+  currentSignature = u.signature;
   links = Array.from(document.querySelectorAll('#changes-panel .file-link'));
   sourceLinks = Array.from(document.querySelectorAll('.source-link'));
 
-  // 4) Reset lazy-materialize + index state so the new diff bodies / source / symbols rebuild on demand.
+  // 3) Reset lazy-materialize + index state so the new diff bodies / source / symbols rebuild on demand.
   bodyPromise = {};
   diffBootDone = false;
   sourceLoaded = !REVIEW_LAZY_LOAD; // lazyLoad: re-fetch source content on next use
@@ -2648,13 +2671,13 @@ function applyDiffUpdate(html) {
   else { prepareDiff2HtmlHunks(); diffBootDone = true; }
   if (!REVIEW_LAZY_LOAD) setTimeout(startSymbolIndex, 0);
 
-  // 5) Re-run the DOM-dependent bootstrap steps.
+  // 4) Re-run the DOM-dependent bootstrap steps.
   applyI18n();
   populateHttpEnvSelect();
   initSourceTreeFolds();
   refreshComments();
 
-  // 6) Best-effort restore of what the user was looking at.
+  // 5) Best-effort restore of what the user was looking at.
   if (wasSource && openPath && sourceByPath.has(openPath)) {
     openSourceFile(openPath, false);
   } else if (container) {
@@ -2676,11 +2699,11 @@ async function checkForLiveUpdate() {
       liveStatus.textContent = t('status.live.updated') + ' ' + new Date(state.generatedAt).toLocaleTimeString();
     }
     if (state.signature && state.signature !== currentSignature) {
-      // serve mode: pull the rebuilt /review HTML and refresh in place (same path Electron uses over IPC)
-      // rather than reloading — so an open integrated terminal keeps its sessions.
+      // serve mode: fetch just the compact update payload and refresh in place (same path Electron uses
+      // over IPC) rather than reloading — so an open integrated terminal keeps its sessions.
       try {
-        var fresh = await fetch('review', { cache: 'no-store' });
-        if (fresh.ok) applyDiffUpdate(await fresh.text());
+        var fresh = await fetch('__ai_flow_update', { cache: 'no-store' });
+        if (fresh.ok) applyDiffUpdate(await fresh.json());
       } catch (e) {}
     }
   } catch {
@@ -3300,6 +3323,14 @@ function symbolIndexWorker() {
     }
     self.postMessage({ index: index, total: total });
   };
+}
+// Run symbol indexing off the critical path: requestIdleCallback so the heavy postMessage of the whole
+// source blob to the worker (structured-clone serialization is synchronous on the main thread) never
+// competes with key handling — especially on big repos right after the diff/tree first paints.
+function scheduleSymbolIndex() {
+  var run = function () { try { startSymbolIndex(); } catch (e) {} };
+  if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') window.requestIdleCallback(run, { timeout: 3000 });
+  else setTimeout(run, 0);
 }
 function startSymbolIndex() {
   try {

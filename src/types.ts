@@ -91,12 +91,28 @@ export type DiffReviewResult = {
   hunks: number;
 };
 
+// In-place diff refresh payload (Electron IPC / serve /__ai_flow_update): only the regions the renderer
+// transplants on a watch change — far smaller than re-sending the whole HTML (no xterm blob etc.).
+export type DiffReviewUpdate = {
+  signature: string;
+  generatedAt: string;
+  diffContainer: string; // #diff2html-container innerHTML (lazy shells; bodies still fetched on demand)
+  changesPanel: string; // #changes-panel innerHTML
+  filesTree: string; // files tree HTML (#files-panel / #files-tree-html island)
+  reviewStatus: string; // .review-status innerHTML
+  fileStates: ReviewFileState[];
+  sourceFilesMeta: SourceFile[]; // metadata only when lazyLoad (content fetched separately)
+  httpEnvironments: Record<string, Record<string, string>>;
+};
+
 export type DiffReviewBuild = {
   html: string;
   files: number;
   hunks: number;
   signature: string;
   generatedAt: string;
+  // Compact payload for in-place refresh (Electron watch / serve poll); see DiffReviewUpdate.
+  update?: DiffReviewUpdate;
   // Phase 2 lazy-LOAD: per-file diff body HTML, served on demand (IPC / HTTP) instead of embedded,
   // so the initial HTML stays small. Indexed by file order. Empty unless lazyLoad was requested.
   lazyBodies?: string[];

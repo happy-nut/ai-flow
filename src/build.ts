@@ -4,7 +4,7 @@ import type { DiffReviewBuild } from "./types.js";
 import { isGitRepository } from "./git.js";
 import { collectHttpEnvironments, collectReviewFileStates, collectSourceFiles, parseUnifiedDiff, readUnifiedDiff } from "./diff.js";
 import { renderDiff2Html } from "./highlight.js";
-import { diffSubtitle, renderDiffHtml, renderNotGitRepoHtml, shouldLazyRender, splitDiffForLazy } from "./render.js";
+import { diffSubtitle, renderDiffHtml, renderDiffTree, renderNotGitRepoHtml, renderReviewStatus, renderSourceTree, shouldLazyRender, splitDiffForLazy } from "./render.js";
 
 export function buildDiffReview(input: {
   base?: string;
@@ -79,6 +79,28 @@ export function buildDiffReview(input: {
     generatedAt,
   });
 
+  // Compact payload for in-place refresh: just the regions the renderer swaps on a watch change. Reuses
+  // the same fragment renderers as the full page, minus the heavy bits (xterm blob, embedded source).
+  const update = {
+    signature,
+    generatedAt,
+    diffContainer: diffSplit.container || '<div class="empty" data-i18n="diff.noDiff">No diff to review.</div>',
+    changesPanel: renderDiffTree(files),
+    filesTree: renderSourceTree(sourceFiles),
+    reviewStatus: renderReviewStatus({
+      files: files.length,
+      hunks,
+      embeddedFiles: sourceFiles.filter((file) => file.embedded).length,
+      sourceFileCount: sourceFiles.length,
+      ignoreWhitespace: input.ignoreWhitespace,
+      watch: input.watch,
+      generatedAt,
+    }),
+    fileStates,
+    sourceFilesMeta: lazyLoad ? sourceFiles.map((file) => ({ ...file, content: "", image: "" })) : sourceFiles,
+    httpEnvironments,
+  };
+
   return {
     html,
     files: files.length,
@@ -87,5 +109,6 @@ export function buildDiffReview(input: {
     generatedAt,
     lazyBodies: diffSplit.bodies,
     lazySourceData: lazyLoad ? JSON.stringify(sourceFiles) : undefined,
+    update,
   };
 }

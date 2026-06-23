@@ -221,7 +221,7 @@ app.whenReady().then(async () => {
       { type: "separator" },
       { label: "Focus Previous Pane", accelerator: "CommandOrControl+Alt+[", click: () => mainWindow?.webContents.send("monacori:terminal-pane-focus", -1) },
       { label: "Focus Next Pane", accelerator: "CommandOrControl+Alt+]", click: () => mainWindow?.webContents.send("monacori:terminal-pane-focus", 1) },
-      { label: "Rename Pane", accelerator: "F2", click: () => mainWindow?.webContents.send("monacori:terminal-pane-rename") },
+      { label: "Rename Pane", accelerator: "CommandOrControl+Alt+R", click: () => mainWindow?.webContents.send("monacori:terminal-pane-rename") },
     ],
   });
   Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate));
@@ -256,7 +256,10 @@ app.whenReady().then(async () => {
   // paint and swap it in. The first build used to run synchronously *before* the window existed, so the
   // screen stayed blank for the first few seconds of startup; now the user sees a loading screen instead.
   await mainWindow.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LOADING_HTML));
-  setImmediate(() => {
+  // Give the loading spinner a few frames to actually paint before the (synchronous) first build blocks
+  // the main process — otherwise the spinner looks frozen until the build finishes. The boot overlay in
+  // the review HTML then takes over, so there's no blank gap when loadFile swaps the page in.
+  setTimeout(() => {
     try {
       const firstBuild = writeReviewFile(options);
       currentSignature = firstBuild.signature;
@@ -266,7 +269,7 @@ app.whenReady().then(async () => {
       console.error(error instanceof Error ? error.message : String(error));
       app.quit();
     }
-  });
+  }, 60);
 }).catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : String(error));
   app.quit();
@@ -288,10 +291,10 @@ async function refreshIfChanged(): Promise<void> {
       currentSignature = next.signature;
       // Refresh the diff in place instead of reloading the window. A full reload re-runs the renderer,
       // whose beforeunload kills every pty — so an integrated terminal running claude/codex would die on
-      // each working-tree change. The renderer transplants the new diff/trees/data from this HTML and
-      // re-fetches per-file bodies/source over the existing IPC (currentBodies/currentSourceData were just
-      // refreshed by writeReviewFile above).
-      mainWindow.webContents.send("monacori:diff-update", next.html);
+      // each working-tree change. We send only the compact update payload (diff/trees/status/data — no
+      // xterm blob), and the renderer transplants it + re-fetches per-file bodies/source over the existing
+      // IPC (currentBodies/currentSourceData were just refreshed by writeReviewFile above).
+      if (next.update) mainWindow.webContents.send("monacori:diff-update", next.update);
     }
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
@@ -300,7 +303,7 @@ async function refreshIfChanged(): Promise<void> {
   }
 }
 
-function writeReviewFile(input: AppOptions): { signature: string; html: string } {
+function writeReviewFile(input: AppOptions): { signature: string; html: string; update?: import("./types.js").DiffReviewUpdate } {
   const build = buildDiffReview({
     base: input.base,
     staged: input.staged,
@@ -314,7 +317,7 @@ function writeReviewFile(input: AppOptions): { signature: string; html: string }
   writeFileSync(reviewPath(), build.html);
   currentBodies = build.lazyBodies ?? [];
   currentSourceData = build.lazySourceData ?? "[]";
-  return { signature: build.signature, html: build.html };
+  return { signature: build.signature, html: build.html, update: build.update };
 }
 
 function reviewPath(): string {

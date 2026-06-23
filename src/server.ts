@@ -131,6 +131,13 @@ export function serveDiffWatch(input: {
         return;
       }
 
+      // Compact in-place refresh payload — the poller fetches this only when the signature changed.
+      if (requestUrl.pathname === "/__ai_flow_update") {
+        const latest = lastBuild ?? build();
+        writeHttpJson(response, latest.update ?? {});
+        return;
+      }
+
       if (requestUrl.pathname === "/__http_send" && request.method === "POST") {
         void handleHttpProxy(request, response);
         return;

@@ -465,14 +465,16 @@ td.d2h-del:not(.d2h-code-side-linenumber) { color: #d8e0e8; }
 }
 .tree-dir summary::-webkit-details-marker { display: none; }
 .tree-dir summary:hover { background: var(--bg); }
-.tree-dir:not([open]) .folder-icon { transform: rotate(-90deg); }
 .folder-icon {
   display: inline-grid;
   place-items: center;
-  font-size: 9px;
   color: var(--muted);
-  transition: transform 120ms ease;
 }
+.folder-icon .folder-ic { width: 14px; height: 14px; display: block; }
+/* Closed vs open folder glyph (replaces the old rotated "v" chevron). */
+.tree-dir > summary .fi-open { display: none; }
+.tree-dir[open] > summary .fi-closed { display: none; }
+.tree-dir[open] > summary .fi-open { display: block; }
 .file-link.tree-file { padding-left: calc(8px + (var(--depth) * 14px)); }
 .tree-focus { box-shadow: inset 0 0 0 1px var(--active); border-radius: 6px; }
 summary.tree-focus { background: var(--bg); }
@@ -642,6 +644,31 @@ h1 { margin: 0; font-size: 18px; }
   background: var(--panel);
   user-select: text;
 }
+/* Extend the line-number gutter (and its divider) to the bottom of the panel so it never stops at the
+   last line with an empty strip + cut-off border below it — one continuous gutter. The .num cell is 58px
+   wide + 8px padding each side + 1px border ≈ 75px; the gradient mirrors that. (pre-wrap = no h-scroll, so
+   a fixed background stays aligned.) */
+.source-body:not(.empty):not(.image-body) {
+  background-image: linear-gradient(to right, var(--line) 0 74px, var(--border) 74px 75px, var(--panel) 75px);
+  background-repeat: no-repeat;
+}
+/* Boot overlay: painted the instant the review HTML loads, removed once the renderer's bootstrap has drawn
+   the diff/tree — so there's no blank screen between the startup spinner and first render. Mirrors
+   app-main's LOADING_HTML spinner exactly so the hand-off from the loading screen is seamless. */
+#boot-overlay {
+  position: fixed; inset: 0; z-index: 200;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
+  background: #2b2b2b; color: #9aa4af;
+  font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  transition: opacity 0.22s ease;
+}
+#boot-overlay.hide { opacity: 0; pointer-events: none; }
+.boot-spinner {
+  width: 34px; height: 34px;
+  border: 3px solid #3a3a3a; border-top-color: #4a9eff; border-radius: 50%;
+  animation: boot-spin 0.8s linear infinite;
+}
+@keyframes boot-spin { to { transform: rotate(360deg); } }
 /* Empty state ("Select a file…") centered in the available space, not top-left. */
 .source-body.empty {
   display: flex;
@@ -701,7 +728,8 @@ h1 { margin: 0; font-size: 18px; }
 .source-row.md-row.cursor-line .num,
 .source-row.csv-row.cursor-line .num { color: var(--active); }
 .num {
-  width: 58px;
+  width: 75px;
+  box-sizing: border-box; /* fixed 75px total so the .source-body gutter gradient lines up exactly (no bleed) */
   user-select: none;
   text-align: right;
   color: var(--muted);
