@@ -19,6 +19,9 @@
   --token-number: #6897bb;
   --token-literal: #cc7832;
   --token-tag: #e8bf6a;
+  --token-function: #ffc66d;
+  --token-type: #4ec9b0;
+  --token-decorator: #bbb529;
   --d2h-bg-color: var(--panel);
   --d2h-border-color: var(--border);
   --d2h-dim-color: var(--muted);
@@ -57,6 +60,9 @@
   --token-number: #0550ae;
   --token-literal: #cf222e;
   --token-tag: #116329;
+  --token-function: #8250df;
+  --token-type: #953800;
+  --token-decorator: #6639ba;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; }
@@ -65,13 +71,17 @@ html { scrollbar-gutter: stable; }
 body {
   display: grid;
   grid-template-columns: var(--sidebar-width, 280px) minmax(0, 1fr);
+  /* Row 1 = content, row 2 = the integrated terminal. The terminal is a real grid row (not a fixed
+     overlay), so content shrinks above it and the caret can never scroll behind it. When the terminal
+     is .hidden (display:none) the auto row collapses to 0 and content fills the viewport. */
+  grid-template-rows: minmax(0, 1fr) auto;
+  height: 100vh;
   background: var(--bg);
   color: var(--text);
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 .sidebar {
-  position: sticky;
-  top: 0;
+  grid-row: 1 / -1; /* full height, left of both the content and terminal rows */
   height: 100vh;
   display: flex;
   flex-direction: column;
@@ -340,7 +350,7 @@ body {
 .d2h-icon { fill: var(--muted); }
 .d2h-tag { border-color: var(--border); }
 .d2h-files-diff { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-.d2h-file-side-diff { min-width: 0; width: 100%; overflow-x: auto; }
+.d2h-file-side-diff { position: relative; min-width: 0; width: 100%; overflow-x: auto; } /* relative: the line-number cells are position:absolute, so they must scroll WITH this column inside .diff2html-container instead of staying pinned to the viewport */
 .d2h-file-side-diff:first-child { border-right: 1px solid var(--border); }
 .d2h-code-wrapper { width: 100%; }
 .d2h-diff-table {
@@ -555,18 +565,19 @@ summary.tree-focus { background: var(--bg); }
 .status-deleted { background: var(--del); color: #cf222e; }
 .status-renamed { background: #fff8c5; color: #9a6700; }
 .status-source { background: var(--line); color: var(--muted); }
-.content { min-width: 0; padding: 0; display: flex; flex-direction: column; min-height: 100vh; }
+.content { min-width: 0; padding: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; grid-column: 2; grid-row: 1; }
 /* Pin the diff's horizontal scrollbar to the viewport bottom instead of letting it float
    mid-screen when a file's diff is short: fill the content column vertically so the last
    file's diff body extends all the way down. */
 #diff-view:not(.hidden) { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
-#diff-view .diff2html-container { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+#diff-view .diff2html-container { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; overflow: auto; }
 /* Source view mirrors the diff view: fill the content column so the source-body (its last child, after
    the tabs + toolbar) reaches the bottom even for short files, instead of floating at the top. */
 #source-viewer:not(.hidden) { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
 .diff2html-container .d2h-wrapper { flex: 1 1 auto; display: flex; flex-direction: column; }
-.diff2html-container .d2h-file-wrapper:last-child { flex: 1 1 auto; }
-.diff2html-container .d2h-file-wrapper:last-child .d2h-files-diff { height: 100%; }
+/* (removed last-file flex-fill) It forced the wrapper to the container height + overflow:hidden, which
+   froze the diff's vertical scroll — and froze the absolute line numbers at "1". The diff column now
+   scrolls naturally inside .diff2html-container. */
 /* Slimmer scrollbars — the default overlay bars read as chunky on the dark UI. */
 ::-webkit-scrollbar { width: 9px; height: 9px; }
 ::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--muted) 32%, transparent); border-radius: 5px; }
@@ -608,9 +619,10 @@ h1 { margin: 0; font-size: 18px; }
   color: var(--muted);
   font-size: 12px;
 }
+.review-status:empty { display: none; }
 .toolbar p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
 .empty { padding: 24px; color: var(--muted); }
-.source-viewer { min-height: 100vh; }
+.source-viewer { min-height: 0; } /* grid sizes this; a 100vh min would overflow the content row */
 .source-toolbar { margin-bottom: 0; }
 .source-file-meta {
   display: flex;
@@ -709,7 +721,7 @@ h1 { margin: 0; font-size: 18px; }
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: calc(100vh - 7rem);
+  min-height: 0; /* fills the content row via flex; a 100vh-based min would overflow the grid cell */
   font-size: 13px;
 }
 .source-table {
@@ -747,7 +759,7 @@ h1 { margin: 0; font-size: 18px; }
   width: 2px;
   height: 1.25em;
   margin: -1px -1px;
-  background: #fff;
+  background: var(--text); /* themed: bright on dark, dark on light — a hardcoded #fff was invisible in light mode */
   vertical-align: text-bottom;
   pointer-events: none;
   animation: cursor-blink 1.06s step-end infinite;
@@ -801,6 +813,14 @@ h1 { margin: 0; font-size: 18px; }
 }
 /* Question vs change-request is a small colored pill on the kind label — no heavy left bar. */
 .mc-card-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px 6px; color: var(--muted); }
+.mc-target { margin-left: auto; font: 11px Monaco, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); opacity: 0.9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 62%; }
+/* While composing a comment, the textarea owns the only caret — hide the file's inline caret and the
+   cursor-row highlights (diff box-shadow + markdown/csv row tint) so attention stays on the composer. */
+body.mc-composing .code-cursor { display: none; }
+body.mc-composing .mc-diff-cursor-row .d2h-code-side-line { box-shadow: none; }
+body.mc-composing .source-row.cursor-line .md-cell,
+body.mc-composing .source-row.csv-row.cursor-line .csv-cell { background: transparent; }
+body.mc-composing .source-row.cursor-line .num { color: inherit; }
 .mc-kind {
   font-weight: 700; font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase;
   padding: 2px 8px; border-radius: 999px;
@@ -834,8 +854,11 @@ h1 { margin: 0; font-size: 18px; }
 .mc-modal-panel { width: min(900px, calc(100vw - 40px)); height: 80vh; max-height: 80vh; display: grid; grid-template-rows: auto minmax(0, 1fr); border: 1px solid var(--border); border-radius: 10px; background: var(--panel); overflow: hidden; }
 .mc-modal-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--border); color: var(--text); font-weight: 650; }
 .mc-modal-head span { margin-right: auto; }
-.mc-modal-text { width: 100%; height: 100%; box-sizing: border-box; resize: none; border: 0; padding: 12px; background: var(--bg); color: var(--text); font: 12px/1.55 Monaco, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.mc-modal-text { width: 100%; height: 100%; box-sizing: border-box; resize: none; border: 0; padding: 12px; background: var(--bg); color: var(--text); caret-color: var(--text); font: 12px/1.55 Monaco, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .mc-modal-text:focus { outline: none; }
+.mc-dropdown { position: fixed; z-index: 70; min-width: 150px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); padding: 4px; }
+.mc-dropdown-item { display: block; width: 100%; text-align: left; padding: 7px 12px; border: 0; background: transparent; color: var(--text); border-radius: 6px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.mc-dropdown-item.active, .mc-dropdown-item:hover { background: var(--active); color: #fff; }
 /* Prompt memo: split editor | live Markdown preview inside the standard modal shell. */
 .mc-memo-body { display: grid; grid-template-columns: 1fr 1fr; min-height: 0; height: 100%; }
 .mc-memo-edit { height: 100%; border-right: 1px solid var(--border); }
@@ -848,6 +871,9 @@ h1 { margin: 0; font-size: 18px; }
 .tok-number { color: var(--token-number); }
 .tok-literal { color: var(--token-literal); }
 .tok-tag { color: var(--token-tag); font-weight: 650; }
+.tok-function { color: var(--token-function); }
+.tok-type { color: var(--token-type); }
+.tok-decorator { color: var(--token-decorator); font-style: italic; }
 .quick-open {
   position: fixed;
   inset: 0;
@@ -949,9 +975,10 @@ h1 { margin: 0; font-size: 18px; }
 .quick-open-badge { align-self: center; color: var(--muted); font-size: 12px; }
 .quick-open-empty { padding: 28px 14px; color: var(--muted); font-size: 13px; }
 @media (max-width: 900px) {
-  body { grid-template-columns: 1fr; }
-  .sidebar { position: relative; height: auto; border-right: 0; border-bottom: 1px solid var(--border); }
-  .content { padding: 16px; }
+  body { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr) auto; }
+  .sidebar { grid-row: 1; grid-column: 1; height: auto; border-right: 0; border-bottom: 1px solid var(--border); }
+  .content { grid-row: 2; grid-column: 1; padding: 16px; }
+  .terminal-panel { grid-column: 1; grid-row: 3; }
   .toolbar { margin: -16px -16px 16px; padding: 12px 16px; }
   .d2h-files-diff { grid-template-columns: 1fr; }
   .d2h-file-side-diff:first-child { border-right: 0; border-bottom: 1px solid var(--border); }
@@ -1129,12 +1156,10 @@ h1 { margin: 0; font-size: 18px; }
 /* --- Integrated terminal panel (Electron only): fixed to the content column's bottom, height-resizable.
    The active border-top marks it as the merged-prompt send target ("highlighted while it's open"). --- */
 .terminal-panel {
-  position: fixed;
-  left: var(--sidebar-width, 280px);
-  right: 0;
-  bottom: 0;
+  grid-column: 2;
+  grid-row: 2;
+  min-height: 0;
   height: var(--terminal-height, 320px);
-  z-index: 40;
   display: flex;
   flex-direction: column;
   background: var(--bg);
@@ -1181,6 +1206,6 @@ h1 { margin: 0; font-size: 18px; }
 body.terminal-send-mode .sidebar,
 body.terminal-send-mode .content,
 body.terminal-send-mode .sidebar-resizer { opacity: 0.25; pointer-events: none; }
-/* Pad the content tail so it isn't hidden behind the fixed panel while the terminal is open. */
-body.terminal-open .content { padding-bottom: var(--terminal-height, 320px); }
+/* The terminal now occupies a real grid row (see body grid-template-rows), so content shrinks above it
+   and nothing scrolls behind it — no padding/scroll-padding hacks needed. */
 .terminal-toggle.is-active { color: var(--active); }

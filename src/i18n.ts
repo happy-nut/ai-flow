@@ -141,6 +141,8 @@ export const MESSAGES: Record<string, Record<string, string>> = {
     "merged.copied": "Copied",
     "merged.copyFailed": "Copy failed",
     "merged.close": "Close",
+    "dropdown.navigate": "Go to comment",
+    "dropdown.remove": "Remove",
     "merged.qHeading": "# Questions",
     "merged.cHeading": "# Change requests",
 
@@ -284,6 +286,8 @@ export const MESSAGES: Record<string, Record<string, string>> = {
     "merged.copied": "복사됨",
     "merged.copyFailed": "복사 실패",
     "merged.close": "닫기",
+    "dropdown.navigate": "코멘트로 이동",
+    "dropdown.remove": "지우기",
     // Structural markers stay English in both locales (the preamble prose below follows the locale).
     "merged.qHeading": "# Questions",
     "merged.cHeading": "# Change requests",

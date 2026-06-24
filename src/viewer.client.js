@@ -183,6 +183,10 @@ let sourceByPath = new Map(sourceFiles.map((file) => [file.path, file]));
 // and the source view shows a brief loading state. Non-lazy-load modes embed source -> already loaded.
 var sourceLoaded = !REVIEW_LAZY_LOAD;
 var pendingSourceOpen = null;
+// The path whose content is ACTUALLY painted in #source-body right now. dataset.openPath is the INTENDED
+// path and gets set BEFORE the body paints in the lazy-LOAD branch, so the caret fast-path must check this
+// instead — else it patches the caret onto a stale body, leaving one file's content under another's path.
+var sourceBodyPath = null;
 var sourceLoading = false;
 var pendingSymbol = null;
 var sourceTabs = []; // Files-mode tab paths (session-only); see addSourceTab / renderSourceTabs.
@@ -856,11 +860,23 @@ function treeRows() {
 function focusTree(index) {
   const rows = treeRows();
   if (rows.length === 0) return;
-  // Incremental: drop the old focus class and add the new one — no full forEach over every row per keystroke.
-  if (treeFocusIndex >= 0 && treeFocusIndex < rows.length) rows[treeFocusIndex]?.classList.remove('tree-focus');
   treeFocusIndex = Math.max(0, Math.min(rows.length - 1, index));
-  const el = rows[treeFocusIndex];
-  if (el) { el.classList.add('tree-focus'); scheduleScrollIntoView(el); }
+  // Render the focus class AND scroll in the SAME frame. A fast key-repeat queues many ArrowDowns before a
+  // frame; moving the focus class instantly while the coalesced scroll lags makes the panel jump ~one
+  // viewport (~20 rows) at a time. Coalescing both keeps focus + scroll in lockstep so it scrolls smoothly.
+  scheduleTreeFocus();
+}
+var treeFocusRaf = 0;
+function scheduleTreeFocus() {
+  if (treeFocusRaf) return;
+  treeFocusRaf = requestAnimationFrame(function () {
+    treeFocusRaf = 0;
+    const rows = treeRows();
+    if (treeFocusIndex < 0 || treeFocusIndex >= rows.length) return;
+    const el = rows[treeFocusIndex];
+    document.querySelectorAll('.tree-focus').forEach((e) => { if (e !== el) e.classList.remove('tree-focus'); });
+    if (el) { el.classList.add('tree-focus'); el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+  });
 }
 
 function clearTreeFocus() {
@@ -1190,14 +1206,19 @@ document.addEventListener('keydown', (event) => {
 
   if (event.key === 'F7') {
     event.preventDefault();
-    if (!document.getElementById('source-viewer')?.classList.contains('hidden')) {
-      const sourceHunk = firstHunkForPath(document.getElementById('source-viewer')?.dataset.openPath || '');
+    const delta = event.shiftKey ? -1 : 1;
+    const sourceViewer = document.getElementById('source-viewer');
+    // Forward F7 from the source view enters the diff at the open file's own hunk, so the reviewer lands
+    // where they were reading. Shift+F7 — and any file with no hunk of its own — falls through to plain
+    // prev/next-change navigation across the whole diff.
+    if (delta > 0 && sourceViewer && !sourceViewer.classList.contains('hidden')) {
+      const sourceHunk = firstHunkForPath(sourceViewer.dataset.openPath || '');
       if (sourceHunk >= 0) {
         setActive(sourceHunk);
         return;
       }
     }
-    next(event.shiftKey ? -1 : 1);
+    next(delta);
   }
 });
 
@@ -1232,15 +1253,18 @@ document.getElementById('usages')?.addEventListener('click', function (event) {
   if (event.target && event.target.id === 'usages') closeUsages();
 });
 
-links.forEach((link) => {
-  link.addEventListener('click', (event) => {
-    showDiffView(false);
-    const target = Number(link.dataset.hunk);
-    if (!Number.isNaN(target) && target >= 0 && target < hunkTotal()) {
-      event.preventDefault();
-      setActive(target);
-    }
-  });
+// Delegated (like #files-panel below) so it survives the in-place diff update that re-captures `links`
+// on every watch tick — per-element listeners would be lost on the new nodes, and then Cmd+0 → arrow →
+// Enter (which calls row.click()) would silently do nothing.
+document.getElementById('changes-panel')?.addEventListener('click', (event) => {
+  const link = event.target && event.target.closest ? event.target.closest('.file-link') : null;
+  if (!link) return;
+  showDiffView(false);
+  const target = Number(link.dataset.hunk);
+  if (!Number.isNaN(target) && target >= 0 && target < hunkTotal()) {
+    event.preventDefault();
+    setActive(target);
+  }
 });
 
 // Delegated so it works whether the tree is inline (small repos) or materialized later (big repos).
@@ -1498,10 +1522,31 @@ function setDiffCursor(path, side, rowIndex, column, reveal) {
   var col = Math.max(0, Math.min(column, diffLineText(rows[ri]).length));
   diffCursor = { path: path, side: side, rowIndex: ri, column: col };
   diffSelectionAnchor = null; // any direct caret placement (click/F7/Cmd-arrow) drops the selection; Shift+Arrow re-sets it
-  renderDiffCaret();
-  applyDiffSelection();
-  if (reveal) scheduleScrollIntoView(diffRowAt(wrapper, side, ri));
+  if (reveal) {
+    // Render the caret AND scroll in the SAME animation frame. A fast key-repeat queues several ArrowDowns
+    // before one frame; rendering the caret immediately (while the coalesced scroll lags) would push it many
+    // rows past the viewport, then the view would snap ~one viewport at a time. Coalescing both keeps the
+    // caret and scroll in lockstep, so holding ArrowDown scrolls smoothly instead of jumping every ~15 lines.
+    scheduleDiffReveal(wrapper, side, ri);
+  } else {
+    renderDiffCaret();
+    applyDiffSelection();
+  }
   recordNav(navEntryOf('diff'));
+}
+var diffRevealRaf = 0, diffRevealTarget = null;
+function scheduleDiffReveal(wrapper, side, ri) {
+  diffRevealTarget = { wrapper: wrapper, side: side, ri: ri };
+  if (diffRevealRaf) return;
+  diffRevealRaf = requestAnimationFrame(function () {
+    diffRevealRaf = 0;
+    var t = diffRevealTarget; diffRevealTarget = null;
+    renderDiffCaret();
+    applyDiffSelection();
+    if (!t) return;
+    var row = diffRowAt(t.wrapper, t.side, t.ri);
+    if (row && row.scrollIntoView) { try { row.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (x) {} }
+  });
 }
 function navEntryOf(kind) {
   if (kind === 'diff') {
@@ -1751,6 +1796,13 @@ function currentCommentTarget() {
   return { path: path, line: toLine, code: hasSel ? selText : '', from: hasSel ? Math.min(fromLine, toLine) : null, to: hasSel ? Math.max(fromLine, toLine) : null, side: side };
 }
 
+// "live_trading_engine.py:424" (or ":420–424" for a multi-line drag) — shown in the composer head so the
+// reviewer always sees WHICH file + line(s) a comment targets instead of a bare, context-free box.
+function composerTargetLabel(s) {
+  var base = (s.path || '').split('/').pop() || s.path || '';
+  var loc = (s.from != null && s.to != null && s.from !== s.to) ? (s.from + '–' + s.to) : String(s.line);
+  return base + ':' + loc;
+}
 function threadHtml(path, line) {
   var html = '';
   commentsAt(path, line).forEach(function (c) {
@@ -1762,7 +1814,7 @@ function threadHtml(path, line) {
   if (composerState && composerState.path === path && composerState.line === line) {
     var ph = composerState.kind === 'q' ? t('composer.question') : t('composer.changeRequest');
     html += '<div class="mc-card mc-' + composerState.kind + ' mc-composer">'
-      + '<div class="mc-card-head"><span class="mc-kind">' + commentKindLabel(composerState.kind) + '</span></div>'
+      + '<div class="mc-card-head"><span class="mc-kind">' + commentKindLabel(composerState.kind) + '</span><span class="mc-target" title="' + escapeHtml(composerState.path || '') + '">' + escapeHtml(composerTargetLabel(composerState)) + '</span></div>'
       + '<textarea class="mc-input" rows="3" placeholder="' + escapeHtml(ph) + '"></textarea>'
       + '<div class="mc-actions"><button type="button" class="mc-btn mc-save">' + escapeHtml(t('composer.save')) + '</button>'
       + '<button type="button" class="mc-btn mc-ghost mc-cancel">' + escapeHtml(t('composer.cancel')) + '</button>'
@@ -1875,6 +1927,18 @@ function refreshComments() {
   if (isSourceViewerVisible()) renderSourceComments();
   renderCommentBadges();
   applyCommentSelectionHighlight();
+  // Keep body.mc-composing (which hides the file caret) tied to the ACTUAL on-screen composer, not just
+  // composerState. Leaving the composer by any path other than save/cancel (opening another file, switching
+  // views) would otherwise leave the class stuck and hide EVERY caret — making arrow navigation and
+  // comment-box selection look dead. This single sync point covers all refreshComments callers.
+  var visibleComposer = false;
+  var composerInputs = document.querySelectorAll('.mc-composer .mc-input');
+  for (var ci = 0; ci < composerInputs.length; ci++) {
+    if (composerInputs[ci].closest('#diff-view') && !isDiffViewVisible()) continue;
+    if (composerInputs[ci].closest('#source-viewer') && !isSourceViewerVisible()) continue;
+    visibleComposer = true; break;
+  }
+  document.body.classList.toggle('mc-composing', visibleComposer);
   if (composerState) {
     var composerFocusTries = 0;
     var tryFocusComposer = function () {
@@ -1903,7 +1967,8 @@ function openComposer(kind) {
   // Keep the dragged code visibly highlighted via the .mc-sel-line class (applyCommentSelectionHighlight),
   // and clear the native selection so its highlight doesn't bleed into the composer/cards below it.
   try { var psel = window.getSelection(); if (psel) psel.removeAllRanges(); } catch (e) {}
-  refreshComments();
+  refreshComments(); // refreshComments syncs body.mc-composing from the on-screen composer
+
 }
 function closeComposer() {
   if (!composerState) return;
@@ -1954,6 +2019,79 @@ function saveMergePrompt(kind, text) {
   persistSave(mergePromptsKey, saved);
 }
 
+// Reusable custom dropdown (keyboard + mouse). options: [{ label, onSelect }]. First item is pre-selected;
+// Arrow keys move, Enter chooses, Esc / click-outside dismiss. Replaces native <select>/menus everywhere.
+function showCustomDropdown(x, y, options) {
+  var existing = document.getElementById('mc-dropdown');
+  if (existing) existing.remove();
+  var dd = document.createElement('div');
+  dd.id = 'mc-dropdown';
+  dd.className = 'mc-dropdown';
+  var active = 0;
+  function setActive(i) { active = i; for (var j = 0; j < dd.children.length; j++) dd.children[j].classList.toggle('active', j === i); }
+  function close() { dd.remove(); document.removeEventListener('keydown', onKey, true); document.removeEventListener('mousedown', onOutside, true); }
+  function onKey(e) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); e.stopPropagation(); setActive(Math.min(active + 1, options.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); e.stopPropagation(); setActive(Math.max(active - 1, 0)); }
+    else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); var o = options[active]; close(); if (o) o.onSelect(); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
+  }
+  function onOutside(e) { if (!dd.contains(e.target)) close(); }
+  options.forEach(function (opt, i) {
+    var item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'mc-dropdown-item' + (i === 0 ? ' active' : '');
+    item.textContent = opt.label;
+    item.addEventListener('click', function () { close(); opt.onSelect(); });
+    item.addEventListener('mousemove', function () { setActive(i); });
+    dd.appendChild(item);
+  });
+  dd.style.left = Math.round(x) + 'px';
+  dd.style.top = Math.round(y) + 'px';
+  document.body.appendChild(dd);
+  document.addEventListener('keydown', onKey, true);
+  document.addEventListener('mousedown', onOutside, true);
+}
+// Map a char range in the merged textarea back to the comment seq(s) it covers. Each comment is a
+// "### path:line" block; the caret's block (or every block a selection spans) identifies the comment(s).
+function mergedCommentSeqs(kind, start, end) {
+  var items = reviewComments.filter(function (c) { return c.kind === kind; });
+  var text = buildMergedText(kind);
+  var lines = text.split(String.fromCharCode(10));
+  var seqs = [], pos = 0, idx = -1;
+  for (var i = 0; i < lines.length; i++) {
+    var lineStart = pos, lineEnd = pos + lines[i].length;
+    if (lines[i].indexOf('### ') === 0) idx++;
+    if (idx >= 0 && idx < items.length && lineEnd >= start && lineStart <= end) {
+      var s = items[idx].seq;
+      if (seqs.indexOf(s) < 0) seqs.push(s);
+    }
+    pos = lineEnd + 1;
+  }
+  return seqs;
+}
+function navigateToComment(seq) {
+  var c = reviewComments.find(function (x) { return x.seq === seq; });
+  if (!c) return;
+  openSourceFile(c.path);
+  requestAnimationFrame(function () { setSourceCursor(c.path, Math.max(0, (c.line || 1) - 1), 0, true, -1); });
+}
+// Move the merged-view caret to the next (dir=1) / previous (dir=-1) "### path:line" header and center it,
+// so Opt+Arrow steps comment-by-comment in the merged view.
+function jumpMergedComment(area, dir) {
+  var text = area.value;
+  var headers = [], pos = 0;
+  text.split('\n').forEach(function (ln) { if (ln.indexOf('### ') === 0) headers.push(pos); pos += ln.length + 1; });
+  if (!headers.length) return;
+  var cur = area.selectionStart;
+  var target;
+  if (dir > 0) { target = headers.find(function (h) { return h > cur; }); if (target == null) target = headers[headers.length - 1]; }
+  else { var before = headers.filter(function (h) { return h < cur; }); target = before.length ? before[before.length - 1] : headers[0]; }
+  area.selectionStart = area.selectionEnd = target;
+  var lineNum = text.slice(0, target).split('\n').length - 1;
+  var lineH = parseFloat(getComputedStyle(area).lineHeight) || 18;
+  area.scrollTop = Math.max(0, lineNum * lineH - area.clientHeight / 2);
+}
 function buildMergedText(kind) {
   var items = reviewComments.filter(function (c) { return c.kind === kind; });
   var nl = String.fromCharCode(10);
@@ -1991,8 +2129,44 @@ function openMergedView(kind) {
   closeBtn.textContent = t('merged.close');
   var area = document.createElement('textarea');
   area.className = 'mc-modal-text';
-  area.readOnly = true;
+  // NOT readOnly: a readOnly textarea hides the caret in Chromium, yet we need it VISIBLE so the user sees
+  // which comment Opt+Enter / Opt+Arrow will target. Block every edit via beforeinput instead — read-only in
+  // effect while the caret and selection stay fully interactive.
   area.value = buildMergedText(kind);
+  area.addEventListener('beforeinput', function (e) { e.preventDefault(); });
+  // Opt/Alt+Enter on the merged text: a custom dropdown for the comment under the caret — "Go to comment"
+  // + "Remove" for a single caret; "Remove" only for a drag/select-all (can't navigate to many at once).
+  // Removing here calls deleteComment(), which re-syncs the on-screen comment boxes via refreshComments.
+  area.addEventListener('keydown', function (e) {
+    // Opt/Alt + Arrow steps the caret to the next/previous comment block so you can move comment-to-comment
+    // and act on each with Opt+Enter, without hand-scrolling.
+    if (e.altKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      e.preventDefault();
+      e.stopPropagation();
+      jumpMergedComment(area, e.key === 'ArrowDown' ? 1 : -1);
+      return;
+    }
+    if (!e.altKey || (e.key !== 'Enter' && e.code !== 'Enter')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var seqs = mergedCommentSeqs(kind, area.selectionStart, area.selectionEnd);
+    if (!seqs.length) return;
+    var rect = area.getBoundingClientRect();
+    var x = rect.left + 24, y = rect.top + 48;
+    var rerender = function () {
+      if (!reviewComments.filter(function (c) { return c.kind === kind; }).length) { modal.remove(); return; }
+      area.value = buildMergedText(kind);
+    };
+    if (area.selectionStart !== area.selectionEnd || seqs.length > 1) {
+      showCustomDropdown(x, y, [{ label: t('dropdown.remove'), onSelect: function () { seqs.forEach(deleteComment); rerender(); } }]);
+    } else {
+      var seq = seqs[0];
+      showCustomDropdown(x, y, [
+        { label: t('dropdown.navigate'), onSelect: function () { modal.remove(); navigateToComment(seq); } },
+        { label: t('dropdown.remove'), onSelect: function () { deleteComment(seq); rerender(); } },
+      ]);
+    }
+  });
   closeBtn.addEventListener('click', function () { modal.remove(); });
   // Terminal send (Electron, terminal open): close the modal and hand off to pane-pick mode ON the
   // terminal — the chosen pane is highlighted, the rest dimmed, arrows change the choice, Enter sends.
@@ -2336,12 +2510,21 @@ refreshComments();
     }
   }
   function toggle() { setOpen(!isOpen()); }
+  // The keyboard shortcut is "focus-first": when the terminal is visible but focus is elsewhere, the first
+  // press just moves focus INTO the terminal; only when it already owns focus does another press toggle it
+  // closed. (The footer button stays a plain toggle — a mouse click should open/close in one step.)
+  function toggleOrFocus() {
+    if (!isOpen()) { setOpen(true); return; } // setOpen(true) also focuses the active pane
+    var ae = document.activeElement;
+    if (ae && panel.contains(ae)) { setOpen(false); return; } // focus already in the terminal → close
+    if (active) { try { active.term.focus(); } catch (e) {} } // visible but unfocused → just grab focus
+  }
 
   if (toggleBtn) toggleBtn.addEventListener('click', toggle);
   if (closeBtn) closeBtn.addEventListener('click', function () { setOpen(false); });
   // Toggle (Ctrl+`/Alt+F12) and split (Cmd+D) arrive from the Terminal menu accelerators (app-main),
   // because Chromium swallows Cmd+D before a renderer keydown would ever see it.
-  if (window.monacoriMenu && typeof window.monacoriMenu.onTerminalToggle === 'function') window.monacoriMenu.onTerminalToggle(toggle);
+  if (window.monacoriMenu && typeof window.monacoriMenu.onTerminalToggle === 'function') window.monacoriMenu.onTerminalToggle(toggleOrFocus);
   if (window.monacoriMenu && typeof window.monacoriMenu.onTerminalSplit === 'function') window.monacoriMenu.onTerminalSplit(split);
   if (window.monacoriMenu && typeof window.monacoriMenu.onTerminalPaneFocus === 'function') window.monacoriMenu.onTerminalPaneFocus(focusPaneByDelta);
   if (window.monacoriMenu && typeof window.monacoriMenu.onTerminalPaneRename === 'function') window.monacoriMenu.onTerminalPaneRename(function () { renamePane(active); });
@@ -2741,6 +2924,7 @@ function applyDiffUpdate(u) {
   diffBootDone = false;
   sourceLoaded = !REVIEW_LAZY_LOAD; // lazyLoad: re-fetch source content on next use
   sourceLoading = false;
+  sourceBodyPath = null; // the new build may have changed the open file's content — force a body re-render on next open
   symbolIndex = null;
   if (REVIEW_LAZY) { setupLazyDiff(); setTimeout(function () { diffBootDone = true; }, 0); }
   else { prepareDiff2HtmlHunks(); diffBootDone = true; }
@@ -2989,19 +3173,45 @@ function setSourceCursor(path, lineIndex, column, shouldReveal = false, targetLi
   // Fast path: the file is already on screen and only the caret moved. Re-rendering the whole
   // file on every keystroke blocks the main thread on large files, so patch just the previous
   // and new caret lines in place instead.
+  // sourceBodyPath (the file actually painted in the body) must match too — dataset.openPath/viewerCursor
+  // are metadata that can be set before the body repaints (lazy fetch in flight, fast file switch, watch
+  // refresh), so without this the caret patches a STALE body and one file's content shows under another's
+  // breadcrumb. On mismatch we fall through to openSourceFile, which re-renders the body for `path`.
   const sameFileOpen = Boolean(viewer && viewer.dataset.openPath === path && !viewer.classList.contains('hidden')
-    && prev && prev.path === path && !isHttpFile(path));
+    && prev && prev.path === path && !isHttpFile(path) && sourceBodyPath === path);
 
   viewerCursor = { path, lineIndex: boundedLine, column: boundedColumn, targetLine };
 
   if (sameFileOpen) {
-    updateSourceCaret(prev, lines, file.language || 'text');
+    // Coalesce caret render + scroll into ONE frame on reveal (ArrowDown) so a fast key-repeat doesn't run
+    // the caret several rows ahead of the lagging (rAF) scroll and snap ~one viewport at a time ("stutter
+    // every ~26 lines"). Click (no reveal) stays instant.
+    if (shouldReveal) scheduleSourceReveal(prev);
+    else updateSourceCaret(prev, lines, file.language || 'text');
   } else {
     const shouldSwitch = !viewer || viewer.dataset.openPath !== path || viewer.classList.contains('hidden');
     openSourceFile(path, shouldSwitch);
+    if (shouldReveal) scheduleScrollIntoView(document.querySelector('.source-row.cursor-line'));
   }
-  if (shouldReveal) scheduleScrollIntoView(document.querySelector('.source-row.cursor-line'));
   recordNav(navEntryOf('source'));
+}
+var sourceRevealRaf = 0, sourceRevealPrev = null;
+function scheduleSourceReveal(prev) {
+  // First prev of a coalesced burst wins: a fast ArrowDown updates viewerCursor many times before the frame
+  // fires; render the caret once (first prev -> final viewerCursor) and scroll in the SAME frame so caret and
+  // scroll stay locked together instead of the scroll snapping a viewport behind.
+  if (!sourceRevealRaf) sourceRevealPrev = prev;
+  if (sourceRevealRaf) return;
+  sourceRevealRaf = requestAnimationFrame(function () {
+    sourceRevealRaf = 0;
+    var p = sourceRevealPrev; sourceRevealPrev = null;
+    var f = sourceByPath.get(viewerCursor.path);
+    if (!f || !f.embedded) return;
+    var lines = f.content.split(/\r?\n/);
+    updateSourceCaret(p, lines, f.language || 'text');
+    var cl = document.querySelector('.source-row.cursor-line');
+    if (cl && cl.scrollIntoView) { try { cl.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (x) {} }
+  });
 }
 
 // Move the caret by patching only the affected line cells, never the whole <table>. This keeps
@@ -3575,12 +3785,16 @@ function cycleSourceTab(dir) {
 function openSourceFile(path, shouldSwitch = true) {
   const file = sourceByPath.get(path);
   if (!file) return;
+  // Switching to another file abandons any in-progress comment elsewhere; closeComposer() clears
+  // composerState and (via refreshComments) drops body.mc-composing so no caret stays hidden.
+  if (composerState && composerState.path !== path) closeComposer();
   addSourceTab(path);
   renderSourceTabs(path);
   // lazy-LOAD: source content not fetched yet -> show a loading state; loadSourceData re-opens it.
   if (REVIEW_LAZY_LOAD && !sourceLoaded && file.embedded) {
     pendingSourceOpen = { path: path, shouldSwitch: shouldSwitch };
     loadSourceData();
+    sourceBodyPath = null; // body shows a loading placeholder, not this path's content yet
     document.getElementById('source-viewer').dataset.openPath = path;
     sourceLinks.forEach((link) => link.classList.toggle('active', link.dataset.sourceFile === path));
     renderBreadcrumb(document.getElementById('source-title'), path);
@@ -3593,6 +3807,7 @@ function openSourceFile(path, shouldSwitch = true) {
     return;
   }
   rememberRecent(path, 'source');
+  sourceBodyPath = path; // past the lazy guard — every branch below paints THIS path's body (text/image/not-embedded)
   document.getElementById('source-viewer').dataset.openPath = path;
   sourceLinks.forEach((link) => link.classList.toggle('active', link.dataset.sourceFile === path));
   renderBreadcrumb(document.getElementById('source-title'), path);
@@ -4250,6 +4465,14 @@ function highlightLine(text, language) {
       index = end;
       continue;
     }
+    if (char === '@') {
+      const decorator = rest.match(/^@[A-Za-z_$][\w$.]*/);
+      if (decorator) {
+        output += '<span class="tok-decorator">' + escapeHtml(decorator[0]) + '</span>';
+        index += decorator[0].length;
+        continue;
+      }
+    }
     const number = rest.match(/^\b\d+(?:\.\d+)?\b/);
     if (number) {
       output += '<span class="tok-number">' + escapeHtml(number[0]) + '</span>';
@@ -4259,8 +4482,11 @@ function highlightLine(text, language) {
     const identifier = rest.match(/^[A-Za-z_$][\w$-]*/);
     if (identifier) {
       const value = identifier[0];
+      const trailing = text.slice(index + value.length);
       if (keywords.has(value)) output += '<span class="tok-keyword">' + escapeHtml(value) + '</span>';
       else if (literals.has(value)) output += '<span class="tok-literal">' + escapeHtml(value) + '</span>';
+      else if (/^\s*\(/.test(trailing)) output += '<span class="tok-function">' + escapeHtml(value) + '</span>';
+      else if (/^[A-Z]/.test(value) && /[a-z]/.test(value)) output += '<span class="tok-type">' + escapeHtml(value) + '</span>';
       else output += escapeHtml(value);
       index += value.length;
       continue;

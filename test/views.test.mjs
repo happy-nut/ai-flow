@@ -211,3 +211,189 @@ test("markdown HTML is sanitized (scripts + event handlers stripped)", async () 
   assert.equal(img && img.getAttribute("onerror"), null, "onerror is removed");
   v.close();
 });
+
+test("F7 from the source view enters the diff (forward navigation works)", async () => {
+  const v = await loadViewer(html);
+  await v.openSourceFile("src/app.ts");
+  assert.equal(v.visibleView(), "source");
+
+  v.key("F7"); // next change: from a changed file's source, land in its diff
+  await v.settle(120);
+  assert.equal(v.visibleView(), "diff", "F7 switched from the source view into the diff");
+  v.close();
+});
+
+test("Shift+F7 is a distinct backward step, not a no-op that mirrors F7", async () => {
+  // Regression: the source-view branch used to ignore shiftKey and always jump to the open file's own
+  // hunk, so F7 and Shift+F7 behaved identically. Shift+F7 must fall through to prev-change navigation.
+  const v = await loadViewer(html);
+  await v.openSourceFile("src/app.ts");
+
+  v.key("F7", { shiftKey: true });
+  await v.settle(120);
+  assert.equal(v.visibleView(), "diff", "Shift+F7 still navigates into the diff");
+  v.close();
+});
+
+test("syntax highlighter tags function calls, PascalCase types, and decorators", async () => {
+  const { html } = await makeReviewHtml([
+    {
+      path: "sample.py",
+      before: "x = 1\n",
+      after: "@cached\ndef run(self):\n    item: MyType = other\n",
+    },
+  ]);
+  const v = await loadViewer(html);
+  await v.openSourceFile("sample.py");
+  const body = v.$("#source-body");
+  assert.ok(body.querySelector(".tok-decorator"), "@cached → decorator token");
+  assert.ok(body.querySelector(".tok-function"), "run( → function-call token");
+  assert.ok(body.querySelector(".tok-type"), "MyType → PascalCase type token");
+  v.close();
+});
+
+test("header strip is free of meta clutter (no file/hunk counts, indexed ratio, or ISO timestamp)", async () => {
+  // The reviewer found the file/hunk counts, the static "<embedded>/<total> indexed" ratio (which never
+  // moves and reads as a frozen progress bar), and the raw generatedAt ISO string noisy and space-hungry.
+  const v = await loadViewer(html);
+  const strip = v.$(".review-status");
+  assert.equal((strip?.textContent || "").trim(), "", "review-status carries no meta text");
+  // The two things that must survive: the viewed toggle (a separate button) and the footer progress bar
+  // (the single, intended home for background-indexing progress).
+  assert.ok(v.$("#diff-viewed-toggle"), "viewed toggle button is still present");
+  assert.ok(v.$("#footer-progress"), "footer progress bar remains for indexing progress");
+  v.close();
+});
+
+test("composing toggles body.mc-composing so the file caret is hidden while typing", async () => {
+  const v = await loadViewer(html);
+  await v.openSourceFile("src/app.ts");
+  await v.clickSourceLine(1);
+  await v.openComposer("c");
+  assert.ok(
+    v.window.document.body.classList.contains("mc-composing"),
+    "opening the composer hides the file caret via body.mc-composing",
+  );
+  await v.writeAndSave("done");
+  assert.equal(
+    v.window.document.body.classList.contains("mc-composing"),
+    false,
+    "saving restores the file caret (mc-composing removed)",
+  );
+  v.close();
+});
+
+test("composer head labels the comment target as file:line", async () => {
+  const v = await loadViewer(html);
+  await v.openSourceFile("src/app.ts");
+  await v.clickSourceLine(1); // line index 1 → display line 2
+  await v.openComposer("c");
+  const target = v.$(".mc-composer .mc-target");
+  assert.ok(target, "composer head carries a target label");
+  assert.match(target.textContent, /^app\.ts:\d+$/, "shows basename:line (e.g. app.ts:2)");
+  v.close();
+});
+
+test("ArrowDown selects the comment box below the caret line (keyboard comment-box selection)", async () => {
+  const v = await loadViewer(html);
+  await v.openSourceFile("src/app.ts");
+  await v.clickSourceLine(0);
+  await v.openComposer("c");
+  await v.writeAndSave("pick me");
+  // The saved comment box now sits right after line 0's source row.
+  await v.clickSourceLine(0);
+  v.key("ArrowDown");
+  await v.settle(80);
+  assert.ok(v.$(".mc-comment-row.mc-row-selected"), "ArrowDown selects the comment box");
+  v.close();
+});
+
+test("leaving the composer unsaved (open another file) clears mc-composing — caret never stays hidden", async () => {
+  // Regression: mc-composing was only removed on save/cancel, so leaving via any other path (open
+  // another file, switch views) left it stuck and `body.mc-composing .code-cursor{display:none}` hid
+  // every caret — making arrow navigation / comment-box selection look dead.
+  const v = await loadViewer(html);
+  await v.openSourceFile("src/app.ts");
+  await v.clickSourceLine(0);
+  await v.openComposer("c");
+  assert.ok(v.window.document.body.classList.contains("mc-composing"), "composing while open");
+  await v.openSourceFile("README.md");
+  assert.equal(
+    v.window.document.body.classList.contains("mc-composing"),
+    false,
+    "mc-composing is cleared once the composer is no longer on screen",
+  );
+  v.close();
+});
+
+test("Cmd+0 focuses the Changes panel; arrow + Enter opens that file in the diff (delegated click)", async () => {
+  // Regression: the Changes panel used per-element click listeners, which were lost when a watch tick
+  // re-captured `links` — so Cmd+0 → arrow → Enter (row.click()) silently did nothing. The handler is
+  // now delegated on #changes-panel (like #files-panel), so it survives re-capture.
+  const v = await loadViewer(html);
+  await v.openSourceFile("src/app.ts");
+  assert.equal(v.visibleView(), "source");
+  v.key("0", { metaKey: true }); // Cmd+0 → focus the Changes panel
+  await v.settle(80);
+  v.key("ArrowDown");
+  await v.settle(40);
+  v.key("Enter"); // open the focused changed file
+  await v.settle(120);
+  assert.equal(v.visibleView(), "diff", "Enter on a Changes-panel row opens the diff view");
+  v.close();
+});
+
+test("merged view: Opt+Enter opens a custom dropdown; Remove deletes the comment and syncs the box", async () => {
+  const v = await loadViewer(html);
+  await v.openSourceFile("src/app.ts");
+  await v.clickSourceLine(1);
+  await v.openComposer("q");
+  await v.writeAndSave("removeme");
+  v.key("?", { metaKey: true }); // Cmd+? → merged questions view
+  await v.settle(80);
+  const area = v.$(".mc-modal-text");
+  assert.ok(area, "merged view textarea present");
+  assert.match(area.value, /removeme/, "comment text is in the merged view");
+  const pos = area.value.indexOf("removeme");
+  area.selectionStart = area.selectionEnd = pos; // caret inside the comment block
+  area.dispatchEvent(new v.window.KeyboardEvent("keydown", { key: "Enter", altKey: true, bubbles: true, cancelable: true }));
+  await v.settle(40);
+  const dd = v.$("#mc-dropdown");
+  assert.ok(dd, "custom dropdown appears on Opt+Enter");
+  const items = [...dd.querySelectorAll(".mc-dropdown-item")];
+  assert.equal(items.length, 2, "single caret offers navigate + remove");
+  items.find((b) => /remove|지우기/i.test(b.textContent)).click();
+  await v.settle(60);
+  assert.equal(v.$(".mc-comment-row"), null, "comment box removed in sync (deleteComment → refreshComments)");
+  v.close();
+});
+
+test("merged view: caret is interactive (not readOnly) and Opt+Arrow steps between comment headers", async () => {
+  const v = await loadViewer(html);
+  await v.openSourceFile("src/app.ts");
+  await v.clickSourceLine(0);
+  await v.openComposer("q");
+  await v.writeAndSave("first comment");
+  await v.clickSourceLine(1);
+  await v.openComposer("q");
+  await v.writeAndSave("second comment");
+  v.key("?", { metaKey: true }); // Cmd+? → merged questions view
+  await v.settle(80);
+  const area = v.$(".mc-modal-text");
+  assert.ok(area, "merged view textarea present");
+  // readOnly hides the caret in Chromium — the merged view must NOT be readOnly so the caret is visible
+  assert.equal(area.readOnly, false, "merged textarea is interactive (caret visible), edits blocked via beforeinput");
+  const headers = [];
+  let idx = area.value.indexOf("### ");
+  while (idx !== -1) { headers.push(idx); idx = area.value.indexOf("### ", idx + 1); }
+  assert.equal(headers.length, 2, "two comment headers present");
+  const optArrow = (key) => area.dispatchEvent(new v.window.KeyboardEvent("keydown", { key, altKey: true, bubbles: true, cancelable: true }));
+  area.selectionStart = area.selectionEnd = 0;
+  optArrow("ArrowDown");
+  assert.equal(area.selectionStart, headers[0], "Opt+Down jumps the caret to the first comment header");
+  optArrow("ArrowDown");
+  assert.equal(area.selectionStart, headers[1], "Opt+Down again jumps to the second comment header");
+  optArrow("ArrowUp");
+  assert.equal(area.selectionStart, headers[0], "Opt+Up jumps back to the first comment header");
+  v.close();
+});

@@ -94,7 +94,7 @@ export function splitDiffForLazy(diffHtml: string, files: DiffFile[]): { contain
 
 // The toolbar's review-status row (file/hunk counts, index + live status). Extracted so the in-place
 // update path can re-render just this strip; renderDiffHtml wraps it in <div class="review-status">.
-export function renderReviewStatus(input: {
+export function renderReviewStatus(_input: {
   files: number;
   hunks: number;
   embeddedFiles: number;
@@ -103,7 +103,13 @@ export function renderReviewStatus(input: {
   watch?: boolean;
   generatedAt?: string;
 }): string {
-  return `<span>${input.files} <span data-i18n="status.files">files</span></span><span>${input.hunks} <span data-i18n="status.hunks">hunks</span></span>${input.ignoreWhitespace ? '<span class="ws-ignored" data-i18n="status.wsIgnored" data-i18n-title="status.wsIgnored.title" title="Whitespace ignored — Cmd/Ctrl+Shift+W">ws ignored</span>' : ""}<span class="index-status" id="index-status" data-i18n-title="status.index.title" title="Go-to-definition index">${input.embeddedFiles}/${input.sourceFileCount} indexed</span><span class="index-progress hidden" id="index-progress" aria-hidden="true"><span class="index-progress-bar"></span></span><span class="live-status ${input.watch ? "watching" : ""}" id="live-status"${input.watch ? ' data-i18n="status.watching"' : ""}>${input.watch ? "watching" : escapeHtml(input.generatedAt ?? new Date().toISOString())}</span>`;
+  // Deliberately empty. The reviewer asked for a clean header: file/hunk counts duplicate the Changes
+  // tab, the raw generatedAt ISO string is unreadable, and "<embedded>/<total> indexed" is a STATIC
+  // ratio (not a live counter), so it reads as a frozen/broken progress number. Symbol-index progress
+  // now surfaces only as the thin footer-progress bar (setIndexProgress still drives it via null-guards);
+  // the "viewed" toggle is a separate button outside this strip, so it stays. `.review-status:empty`
+  // collapses the now-empty strip so it takes no space next to the breadcrumb.
+  return "";
 }
 
 export function renderDiffHtml(input: {
