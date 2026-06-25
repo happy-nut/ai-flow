@@ -1008,6 +1008,15 @@ function handleTreeKey(event) {
   return false;
 }
 
+// d2h-file-side-diff is a HORIZONTAL scrollport (overflow-x:auto), so the browser swallows VERTICAL wheel
+// there instead of bubbling it to #diff2html-container — the diff wouldn't scroll by mouse wheel at all.
+// Redirect vertical wheel to the container; leave horizontal wheel (deltaX) for the side's own h-scroll.
+(function () {
+  var dsc = document.getElementById('diff2html-container');
+  if (dsc) dsc.addEventListener('wheel', function (e) {
+    if (Math.abs(e.deltaY) >= Math.abs(e.deltaX) && e.deltaY !== 0) { dsc.scrollTop += e.deltaY; e.preventDefault(); }
+  }, { passive: false });
+})();
 document.addEventListener('keydown', (event) => {
   if (!quickOpen?.classList.contains('hidden')) {
     if (handleQuickOpenKey(event)) return;
@@ -1114,6 +1123,13 @@ document.addEventListener('keydown', (event) => {
     }
   }
 
+  // PageUp/Down scroll the diff/source view. There's no focusable scroller (the diff caret is a JS cursor),
+  // and d2h-file-side-diff's horizontal scrollport even swallows vertical wheel, so handle paging explicitly.
+  // Only when the tree isn't focused — the tree pages itself in handleTreeKey below.
+  if (treeFocusIndex < 0 && (event.key === 'PageDown' || event.key === 'PageUp') && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    var psc = isDiffViewVisible() ? document.getElementById('diff2html-container') : (isSourceViewerVisible() ? document.getElementById('source-body') : null);
+    if (psc) { event.preventDefault(); psc.scrollTop += (event.key === 'PageDown' ? 0.9 : -0.9) * psc.clientHeight; return; }
+  }
   if (treeFocusIndex >= 0 && handleTreeKey(event)) return;
   if (treeFocusIndex < 0 && !event.metaKey && !event.ctrlKey && !event.altKey && isSourceViewerVisible() && handleSourceCaretKey(event)) return;
   if (treeFocusIndex < 0 && !event.metaKey && !event.ctrlKey && !event.altKey && isDiffViewVisible() && handleDiffCaretKey(event)) return;

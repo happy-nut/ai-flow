@@ -431,3 +431,31 @@ test("comment tracking: follows a moved line; dropped + toasted when the snapsho
   assert.ok(v.$(".mc-toast"), "a bottom-left toast announced the dropped comment");
   v.close();
 });
+
+test("diff view: vertical wheel + PageUp/Down scroll the diff container", async () => {
+  const v = await loadViewer(html);
+  await v.openDiffFor("src/app.ts");
+  const c = v.$("#diff2html-container");
+  assert.ok(c, "diff container present");
+  // .d2h-file-side-diff is a horizontal scrollport that would swallow vertical wheel; the handler must
+  // redirect vertical wheel to the container.
+  c.scrollTop = 0;
+  c.dispatchEvent(new v.window.WheelEvent("wheel", { deltaY: 180, deltaX: 0, bubbles: true, cancelable: true }));
+  assert.equal(c.scrollTop, 180, "vertical wheel scrolls the diff container");
+  // a wheel on the side-diff child bubbles up to the same container handler
+  const side = v.$(".d2h-file-side-diff");
+  if (side) {
+    c.scrollTop = 0;
+    side.dispatchEvent(new v.window.WheelEvent("wheel", { deltaY: 120, deltaX: 0, bubbles: true, cancelable: true }));
+    assert.equal(c.scrollTop, 120, "wheel on the side-diff bubbles to the container");
+  }
+  // PageDown/PageUp (jsdom has no layout, so give the container a height to page by)
+  Object.defineProperty(c, "clientHeight", { value: 400, configurable: true });
+  c.scrollTop = 0;
+  v.key("PageDown");
+  const down = c.scrollTop;
+  assert.ok(down > 0, "PageDown scrolls the diff down");
+  v.key("PageUp");
+  assert.ok(c.scrollTop < down, "PageUp scrolls the diff up");
+  v.close();
+});
