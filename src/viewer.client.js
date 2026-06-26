@@ -508,7 +508,7 @@ function revealAt(el, scroller, fraction) {
 }
 // Scrolloff variant: scroll ONLY when `el` would otherwise leave the viewport, keeping it within `marginFrac`
 // of the top/bottom edge. While the row moves comfortably inside that band the view stays put — continuous
-// centering scrolled the file even when everything was visible (dizzying). Used by the diff caret.
+// centering scrolled the file even when everything was visible (dizzying). Used by the diff caret and the sidebar tree.
 function scrolloffReveal(el, scroller, marginFrac) {
   if (!el || !scroller || !scroller.clientHeight) return;
   var top = el.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
@@ -673,6 +673,22 @@ function next(delta) {
     idx += delta;
   }
   // Every changed file is marked viewed — nothing left to review, so F7/[/] stay put.
+}
+
+// Jump to the first change of the next unviewed file after `path` (wrapping). Used right after marking a
+// file viewed: its diff body is now hidden, so staying would blank the content — we advance to the next
+// change instead. Returns false when every changed file is viewed (nothing to advance to).
+function gotoNextUnviewedFile(path) {
+  const total = hunkTotal();
+  if (total === 0) return false;
+  const start = firstHunkForPath(path);
+  let idx = (start >= 0 ? start : (current >= 0 ? current : 0)) + 1;
+  for (let step = 0; step < total; step++) {
+    const norm = ((idx % total) + total) % total;
+    if (!isFileViewed(hunkPathAt(norm) || '')) { setActive(norm); return true; }
+    idx += 1;
+  }
+  return false;
 }
 
 function initialHunkForNavigation(delta) {
@@ -916,8 +932,10 @@ function focusTree(index) {
   if (rows.length === 0) return;
   treeFocusIndex = Math.max(0, Math.min(rows.length - 1, index));
   // Render the focus class AND scroll in the SAME frame. A fast key-repeat queues many ArrowDowns before a
-  // frame; moving the focus class instantly while the coalesced scroll lags makes the panel jump ~one
-  // viewport (~20 rows) at a time. Coalescing both keeps focus + scroll in lockstep so it scrolls smoothly.
+  // frame; moving the focus class instantly while the coalesced scroll lags makes the panel jump. Coalescing
+  // both keeps focus + scroll in lockstep, and scrolloffReveal scrolls ONLY when the focused row nears the
+  // top/bottom edge — a row moving inside the visible band must never drag the whole panel (revealAt did,
+  // re-centering on every move so even a mid-list row scrolled the sidebar).
   scheduleTreeFocus();
 }
 var treeFocusRaf = 0;
@@ -929,7 +947,7 @@ function scheduleTreeFocus() {
     if (treeFocusIndex < 0 || treeFocusIndex >= rows.length) return;
     const el = rows[treeFocusIndex];
     document.querySelectorAll('.tree-focus').forEach((e) => { if (e !== el) e.classList.remove('tree-focus'); });
-    if (el) { el.classList.add('tree-focus'); revealAt(el, document.querySelector('.sidebar-scroll'), 0.42); }
+    if (el) { el.classList.add('tree-focus'); scrolloffReveal(el, document.querySelector('.sidebar-scroll'), 0.15); }
   });
 }
 
@@ -1053,9 +1071,11 @@ function handleTreeKey(event) {
 // owns focus AND the only caret, so global shortcuts stand down until Esc/close — we must not navigate a
 // panel the user can't even see behind the overlay (nor leave a second blinking caret in it).
 function isFloatingModalOpen() {
-  if (document.getElementById('mc-modal') || document.getElementById('mc-memo')) return true;
   var sm = document.getElementById('settings-modal');
-  return !!(sm && !sm.classList.contains('hidden'));
+  if (sm && !sm.classList.contains('hidden')) return true;
+  // The merged/memo panels are now docked (inline), not overlays — but while one OWNS focus we still stand
+  // down the global nav shortcuts so typing / ▲▼ inside it isn't hijacked. Focus elsewhere -> shortcuts run.
+  return isDockFocused();
 }
 document.addEventListener('keydown', (event) => {
   if (!quickOpen?.classList.contains('hidden')) {
@@ -1066,9 +1086,29 @@ document.addEventListener('keydown', (event) => {
     if (handleUsagesKey(event)) return;
   }
 
-  // Floating overlay open (merged / memo / settings): it captures keys until Esc. Don't run ANY global
-  // shortcut (Cmd+1, F7, Cmd+[/], Cmd+B, open-merged/memo, …) underneath — focus and the only caret belong
-  // to the overlay. Each overlay has its own Esc + editing handlers, so we simply stand down here.
+  // Dock controls fire regardless of focus (terminal / merged / memo) — they sit ABOVE the focus guard so
+  // they still work from inside a dock panel. Cmd/Ctrl+Shift+' maximizes the active dock; Cmd/Ctrl+Shift+/
+  // and +. open the merged views; Cmd/Ctrl+Shift+N toggles the memo. (Match event.code so IME/layout never
+  // swallows the combo.) Settings is a true overlay, so these stand down while it is up.
+  var settingsUp = (function () { var s = document.getElementById('settings-modal'); return !!(s && !s.classList.contains('hidden')); })();
+  if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === 'Quote') {
+    event.preventDefault();
+    toggleDockMaximized();
+    return;
+  }
+  if (!settingsUp && (event.metaKey || event.ctrlKey) && (event.code === 'Slash' || event.code === 'Period' || event.key === '?' || event.key === '>')) {
+    event.preventDefault();
+    openMergedView((event.code === 'Slash' || event.key === '?') ? 'q' : 'c');
+    return;
+  }
+  if (!settingsUp && (event.metaKey || event.ctrlKey) && event.shiftKey && (event.code === 'KeyN' || event.key === 'n' || event.key === 'N')) {
+    event.preventDefault();
+    openMemoView();
+    return;
+  }
+
+  // Settings overlay (or a focused merged/memo dock) captures keys: stand down the rest of the global
+  // shortcuts (Cmd+1, F7, Cmd+[/], Cmd+B, …). Each has its own Esc + editing handlers.
   if (isFloatingModalOpen()) return;
 
   if ((event.metaKey || event.ctrlKey) && event.key === '1') {
@@ -1121,21 +1161,8 @@ document.addEventListener('keydown', (event) => {
     }
   }
 
-  // Merged comment views — see every saved comment of one kind at once + copy-all to paste into a prompt:
-  //   Cmd/Ctrl+Shift+/ ("?") = all questions, Cmd/Ctrl+Shift+. (">") = all change-requests.
-  // Match the PHYSICAL key (event.code) so macOS/IME/layout never swallows the combo; fires in any focus.
-  if ((event.metaKey || event.ctrlKey) && (event.code === 'Slash' || event.code === 'Period' || event.key === '?' || event.key === '>')) {
-    event.preventDefault();
-    openMergedView((event.code === 'Slash' || event.key === '?') ? 'q' : 'c');
-    return;
-  }
-  // Cmd/Ctrl+Shift+N opens/closes the prompt memo. Electron also routes this via the Review menu; in the
-  // browser/serve build (no menu) this keydown is the only path. Match the physical key so layout/IME never swallows it.
-  if ((event.metaKey || event.ctrlKey) && event.shiftKey && (event.code === 'KeyN' || event.key === 'n' || event.key === 'N')) {
-    event.preventDefault();
-    openMemoView();
-    return;
-  }
+  // (Merged views Cmd/Ctrl+Shift+/ +. and the memo Cmd/Ctrl+Shift+N are handled above the focus guard so
+  // they work from inside a dock too.)
   // "?" = question, ">" = change-request composer on the current line/selection (no modifier).
   if (!event.altKey && !event.metaKey && !event.ctrlKey && (event.key === '?' || event.key === '>')) {
     const ce = document.activeElement;
@@ -1160,7 +1187,12 @@ document.addEventListener('keydown', (event) => {
       }
       if (vp && currentFileSignature(vp)) {
         event.preventDefault();
-        setFileViewed(vp, !isFileViewed(vp));
+        const willView = !isFileViewed(vp);
+        setFileViewed(vp, willView);
+        // Marking viewed hides this file's diff body — don't strand the caret on the now-blank file.
+        // Auto-advance to the next unviewed change (the user's flow: mark viewed -> jump to next).
+        // Unmarking stays put. If every file is viewed, gotoNextUnviewedFile is a no-op.
+        if (willView) gotoNextUnviewedFile(vp);
         return;
       }
     }
@@ -1184,6 +1216,10 @@ document.addEventListener('keydown', (event) => {
     var psc = isDiffViewVisible() ? document.getElementById('diff2html-container') : (isSourceViewerVisible() ? document.getElementById('source-body') : null);
     if (psc) { event.preventDefault(); psc.scrollTop += (event.key === 'PageDown' ? 0.9 : -0.9) * psc.clientHeight; return; }
   }
+  // A non-Shift keystroke between the two Shifts cancels the pending double-Shift quick-open. Without this,
+  // "Shift → type something → Shift" within 300ms still popped the search, so it fired on nearly every other
+  // keystroke. Reset BEFORE the caret handlers below (they swallow arrows) so arrow keys break it too.
+  if (event.key !== 'Shift') { lastShiftAt = 0; lastShiftSide = 0; }
   if (treeFocusIndex >= 0 && handleTreeKey(event)) return;
   if (treeFocusIndex < 0 && !event.metaKey && !event.ctrlKey && !event.altKey && isSourceViewerVisible() && handleSourceCaretKey(event)) return;
   if (treeFocusIndex < 0 && !event.metaKey && !event.ctrlKey && !event.altKey && isDiffViewVisible() && handleDiffCaretKey(event)) return;
@@ -1304,8 +1340,12 @@ document.addEventListener('keydown', (event) => {
     // where they were reading. Shift+F7 — and any file with no hunk of its own — falls through to plain
     // prev/next-change navigation across the whole diff.
     if (delta > 0 && sourceViewer && !sourceViewer.classList.contains('hidden')) {
-      const sourceHunk = firstHunkForPath(sourceViewer.dataset.openPath || '');
-      if (sourceHunk >= 0) {
+      const sp = sourceViewer.dataset.openPath || '';
+      const sourceHunk = firstHunkForPath(sp);
+      // Enter the diff at the open file's own hunk — UNLESS it's already viewed. A viewed file's diff body
+      // is hidden (display:none), so landing on it blanks the content and F7 appears stuck; fall through to
+      // next() instead so we skip to an unviewed change.
+      if (sourceHunk >= 0 && !isFileViewed(sp)) {
         setActive(sourceHunk);
         return;
       }
@@ -1793,11 +1833,51 @@ function moveDiffWord(dir, extend) {
   setDiffCursor(diffCursor.path, diffCursor.side, diffCursor.rowIndex, ncol, true);
   if (anchor) { diffSelectionAnchor = anchor; applyDiffSelection(); }
 }
+// Comment boxes are injected on the right(new) side, right after the line's row (see injectThreadRow /
+// renderDiffComments). Split-view rows align 1:1 by index, so the caret's row index on the new side finds
+// the adjacent box regardless of which side the caret sits on. Mirrors commentRowSiblingOf for the source view.
+function diffCommentBoxSiblingOf(dir) {
+  if (!diffCursor) return null;
+  var wrapper = diffWrapperByPath(diffCursor.path);
+  if (!wrapper) return null;
+  var rows = diffRowsOf(diffSideTable(wrapper, 'new'));
+  var row = rows[diffCursor.rowIndex];
+  if (!row) return null;
+  var sib = dir < 0 ? row.previousElementSibling : row.nextElementSibling;
+  return (sib && sib.classList && sib.classList.contains('mc-comment-row')) ? sib : null;
+}
 function handleDiffCaretKey(event) {
   if (!isDiffViewVisible() || !diffCursor) return false;
   var ae = document.activeElement;
   if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT')) return false;
   var extend = event.shiftKey;
+  // A comment box is selected: Backspace/Delete removes it, `e` edits it, an arrow/Escape steps off it.
+  // Same contract as the source view (handleSourceCaretKey), but caret moves go through setDiffCursor.
+  if (selectedCommentRow) {
+    if (event.key === 'Backspace' || event.key === 'Delete') { event.preventDefault(); deleteCommentsInRow(selectedCommentRow); return true; }
+    if (event.key === 'e' || event.key === 'E') { event.preventDefault(); editCommentInRow(selectedCommentRow); return true; }
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown' || event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'Escape') {
+      var dir = event.key === 'ArrowUp' ? -1 : (event.key === 'ArrowDown' ? 1 : 0);
+      var sib = dir < 0 ? selectedCommentRow.previousElementSibling : (dir > 0 ? selectedCommentRow.nextElementSibling : null);
+      selectedCommentRow.classList.remove('mc-row-selected');
+      selectedCommentRow = null;
+      event.preventDefault();
+      var wrapper = diffWrapperByPath(diffCursor.path);
+      if (sib && wrapper && isDiffCodeRow(sib)) {
+        var rows = diffRowsOf(diffSideTable(wrapper, 'new'));
+        var idx = rows.indexOf(sib);
+        if (idx >= 0) { setDiffCursor(diffCursor.path, 'new', idx, 0, true); return true; }
+      }
+      setDiffCursor(diffCursor.path, diffCursor.side, diffCursor.rowIndex, diffCursor.column, false); // restore caret where it was
+      return true;
+    }
+    return false;
+  }
+  // Plain Up/Down: a comment box attached to the caret line is a selectable stop (caret stays visible).
+  if (!extend && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+    var box = diffCommentBoxSiblingOf(event.key === 'ArrowUp' ? -1 : 1);
+    if (box) { event.preventDefault(); selectCommentRow(box); return true; }
+  }
   if (event.key === 'ArrowDown') { event.preventDefault(); moveDiffCursor(1, 0, extend); return true; }
   if (event.key === 'ArrowUp') { event.preventDefault(); moveDiffCursor(-1, 0, extend); return true; }
   if (event.key === 'ArrowLeft') { event.preventDefault(); moveDiffCursor(0, -1, extend); return true; }
@@ -2292,36 +2372,135 @@ function buildMergedText(kind) {
   return lines.join(nl);
 }
 
-function openMergedView(kind) {
-  var existing = document.getElementById('mc-modal');
-  if (existing) existing.remove();
-  var modal = document.createElement('div');
-  modal.id = 'mc-modal';
-  modal.className = 'mc-modal';
-  modal.dataset.kind = kind; // remembered so a live locale switch can re-render this same view
+// ===== Bottom dock: merged-prompt / memo / terminal share ONE docked slot below the editor =====
+// Only one is visible at a time — opening one closes the others (the terminal included). Cmd/Ctrl+Shift+'
+// maximizes the active dock over the editor area (the sidebar stays). A top resizer drags the height.
+var dockHeightKey = 'monacori-dock-height';
+var dockMaximized = false;
+function applyDockHeight(px) {
+  var h = Math.max(140, Math.min(px, window.innerHeight - 120));
+  document.documentElement.style.setProperty('--dock-height', h + 'px');
+}
+(function () { var s = parseInt(localStorage.getItem(dockHeightKey) || '', 10); if (s) applyDockHeight(s); })();
+// The dock panel currently filling the slot: a merged/memo panel, else the terminal when it's open.
+function activeDockPanel() {
+  var mm = document.getElementById('mc-merged-panel') || document.getElementById('mc-memo-panel');
+  if (mm) return mm;
+  var term = document.getElementById('terminal-panel');
+  return (term && !term.classList.contains('hidden')) ? term : null;
+}
+function applyDockMaximized() {
+  if (!activeDockPanel()) dockMaximized = false; // nothing docked -> can't stay maximized
+  document.body.classList.toggle('dock-maximized', dockMaximized);
+}
+function toggleDockMaximized() {
+  if (!activeDockPanel()) return; // nothing docked -> nothing to maximize
+  dockMaximized = !dockMaximized;
+  applyDockMaximized();
+}
+function isDockFocused() {
+  var ae = document.activeElement;
+  return !!(ae && ae.closest && ae.closest('.dock-panel'));
+}
+// Close the merged/memo docks (the terminal's setOpen also calls this so the slot stays exclusive).
+function closeMergedMemoDocks() {
+  var m = document.getElementById('mc-merged-panel'); if (m) m.remove();
+  var n = document.getElementById('mc-memo-panel'); if (n) n.remove();
+  document.body.classList.toggle('dock-open', !!activeDockPanel());
+  applyDockMaximized();
+}
+window.__monacoriCloseDocks = closeMergedMemoDocks;
+// Retry-focus a docked field (Electron async-restores focus to <body>, so a one-shot focus can lose the race).
+function focusDockField(field, panelSel) {
+  var tries = 0;
+  var tryF = function () {
+    if (!document.querySelector(panelSel)) return true;
+    if (document.activeElement === field) return true;
+    try { field.focus(); } catch (e) {}
+    return document.activeElement === field;
+  };
+  if (!tryF()) { var iv = setInterval(function () { if (tryF() || ++tries > 12) clearInterval(iv); }, 25); }
+}
+// Build a docked panel shell (resizer + bar with Maximize/Close + body) and mount it below the editor.
+// Opening it closes the terminal and any other merged/memo dock (the slot is exclusive). Returns
+// { panel, body, bar, close }.
+function mountDock(id, titleText) {
+  if (window.__monacoriTerminal && typeof window.__monacoriTerminal.close === 'function') {
+    try { window.__monacoriTerminal.close(); } catch (e) {}
+  }
+  var prior = document.getElementById(id);
+  if (prior) prior.remove();
+  closeMergedMemoDocks();
   var panel = document.createElement('div');
-  panel.className = 'mc-modal-panel';
-  var head = document.createElement('div');
-  head.className = 'mc-modal-head';
+  panel.id = id;
+  panel.className = 'dock-panel';
+  panel.tabIndex = -1;
+  var resizer = document.createElement('div');
+  resizer.className = 'dock-resizer';
+  resizer.setAttribute('aria-hidden', 'true');
+  var bar = document.createElement('div');
+  bar.className = 'dock-bar';
   var title = document.createElement('span');
-  title.textContent = kind === 'q' ? t('merged.qTitle') : t('merged.cTitle');
+  title.className = 'dock-title';
+  title.textContent = titleText;
+  var maxBtn = document.createElement('button');
+  maxBtn.type = 'button';
+  maxBtn.className = 'dock-btn dock-max';
+  maxBtn.setAttribute('data-i18n-title', 'dock.maximize');
+  maxBtn.title = t('dock.maximize');
+  maxBtn.textContent = '⤢'; // ⤢ maximize glyph
   var closeBtn = document.createElement('button');
   closeBtn.type = 'button';
-  closeBtn.className = 'mc-btn mc-ghost';
+  closeBtn.className = 'dock-btn dock-close';
+  closeBtn.setAttribute('data-i18n', 'merged.close');
   closeBtn.textContent = t('merged.close');
+  var body = document.createElement('div');
+  body.className = 'dock-body';
+  bar.appendChild(title);
+  bar.appendChild(maxBtn);
+  bar.appendChild(closeBtn);
+  panel.appendChild(resizer);
+  panel.appendChild(bar);
+  panel.appendChild(body);
+  document.body.appendChild(panel);
+  function close() { panel.remove(); closeMergedMemoDocks(); }
+  maxBtn.addEventListener('click', function () { toggleDockMaximized(); });
+  closeBtn.addEventListener('click', close);
+  // Esc closes the dock when focus is inside it; the editor keeps its own handlers otherwise.
+  panel.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
+  });
+  resizer.addEventListener('mousedown', function (e) {
+    e.preventDefault();
+    resizer.classList.add('resizing');
+    function move(ev) { applyDockHeight(window.innerHeight - ev.clientY); }
+    function up() {
+      resizer.classList.remove('resizing');
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      var cur = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--dock-height'), 10);
+      if (cur) { try { localStorage.setItem(dockHeightKey, String(cur)); } catch (x) {} }
+    }
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  });
+  document.body.classList.add('dock-open');
+  applyDockMaximized();
+  return { panel: panel, body: body, bar: bar, close: close };
+}
+
+function openMergedView(kind) {
+  var dock = mountDock('mc-merged-panel', kind === 'q' ? t('merged.qTitle') : t('merged.cTitle'));
+  dock.panel.dataset.kind = kind; // remembered so a live locale switch can re-render this same view
   var area = document.createElement('textarea');
   area.className = 'mc-modal-text';
   // NOT readOnly: a readOnly textarea hides the caret in Chromium, yet we need it VISIBLE so the user sees
-  // which comment Opt+Enter / Opt+Arrow will target. Block every edit via beforeinput instead — read-only in
-  // effect while the caret and selection stay fully interactive.
+  // which comment Opt+Enter / Opt+Arrow will target. Block every edit via beforeinput instead.
   area.value = buildMergedText(kind);
   area.addEventListener('beforeinput', function (e) { e.preventDefault(); });
-  // Opt/Alt+Enter on the merged text: a custom dropdown for the comment under the caret — "Go to comment"
-  // + "Remove" for a single caret; "Remove" only for a drag/select-all (can't navigate to many at once).
-  // Removing here calls deleteComment(), which re-syncs the on-screen comment boxes via refreshComments.
+  // Opt/Alt+Enter on the merged text: a custom dropdown for the comment under the caret. Opt/Alt+Arrow steps
+  // the caret comment-to-comment so each can be acted on without hand-scrolling.
   area.addEventListener('keydown', function (e) {
-    // Opt/Alt + Arrow steps the caret to the next/previous comment block so you can move comment-to-comment
-    // and act on each with Opt+Enter, without hand-scrolling.
     if (e.altKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
       e.preventDefault();
       e.stopPropagation();
@@ -2336,49 +2515,28 @@ function openMergedView(kind) {
     var cxy = mergedCaretXY(area);
     var x = cxy.x, y = cxy.below, flipTop = cxy.top;
     var rerender = function () {
-      if (!reviewComments.filter(function (c) { return c.kind === kind; }).length) { modal.remove(); return; }
+      if (!reviewComments.filter(function (c) { return c.kind === kind; }).length) { dock.close(); return; }
       area.value = buildMergedText(kind);
     };
     if (area.selectionStart !== area.selectionEnd || seqs.length > 1) {
       // Select-all / multi-comment: offer send-to-terminal (the whole merged text) FIRST, then remove-all.
-      // Can't "Go to comment" across many at once, so navigate is omitted here.
       var multi = [];
-      if (window.__monacoriTerminal && typeof window.__monacoriTerminal.isOpen === 'function' && window.__monacoriTerminal.isOpen()) {
-        multi.push({ label: t('merged.sendToTerminal'), onSelect: function () { var text = buildMergedText(kind); modal.remove(); window.__monacoriTerminal.enterSendMode(text); } });
+      if (window.__monacoriTerminal && typeof window.__monacoriTerminal.paneCount === 'function' && window.__monacoriTerminal.paneCount() > 0) {
+        multi.push({ label: t('merged.sendToTerminal'), onSelect: function () { var text = buildMergedText(kind); dock.close(); window.__monacoriTerminal.enterSendMode(text); } });
       }
       multi.push({ label: t('dropdown.remove'), onSelect: function () { seqs.forEach(deleteComment); rerender(); } });
       showCustomDropdown(x, y, multi, flipTop);
     } else {
       var seq = seqs[0];
       showCustomDropdown(x, y, [
-        { label: t('dropdown.navigate'), onSelect: function () { modal.remove(); navigateToComment(seq); } },
+        { label: t('dropdown.navigate'), onSelect: function () { dock.close(); navigateToComment(seq); } },
         { label: t('dropdown.remove'), onSelect: function () { deleteComment(seq); rerender(); } },
       ], flipTop);
     }
   });
-  closeBtn.addEventListener('click', function () { modal.remove(); });
-  // Send-to-terminal now lives in the Opt+Enter dropdown (select-all -> first item), not as a header button.
-  head.appendChild(title);
-  head.appendChild(closeBtn);
-  panel.appendChild(head);
-  panel.appendChild(area);
-  modal.appendChild(panel);
-  modal.addEventListener('mousedown', function (e) { if (e.target === modal) modal.remove(); });
-  modal.addEventListener('keydown', function (e) { if (e.key === 'Escape') { e.preventDefault(); modal.remove(); } });
-  document.body.appendChild(modal);
-  // Focus the read-only text so the caret is visible and Opt+Arrow / Opt+Enter (incl. the send-to-terminal
-  // dropdown item) work. Electron async-restores focus to <body>, so retry briefly (same as the composer).
-  var modalFocusTarget = area;
-  var modalFocusTries = 0;
-  var tryFocusModal = function () {
-    if (!document.getElementById('mc-modal')) return true;
-    if (document.activeElement === modalFocusTarget) return true;
-    try { modalFocusTarget.focus(); modalFocusTarget.selectionStart = modalFocusTarget.selectionEnd = 0; } catch (e) {}
-    return document.activeElement === modalFocusTarget;
-  };
-  if (!tryFocusModal()) {
-    var modalFocusIv = setInterval(function () { if (tryFocusModal() || ++modalFocusTries > 12) clearInterval(modalFocusIv); }, 25);
-  }
+  dock.body.appendChild(area);
+  // Focus the read-only text so the caret is visible and Opt+Arrow / Opt+Enter work; retry (Electron focus race).
+  focusDockField(area, '#mc-merged-panel');
 }
 
 // Prompt memo (Cmd/Ctrl+Shift+N): one freeform Markdown scratchpad with a live split preview, persisted
@@ -2396,27 +2554,10 @@ function renderMemoMd(text) {
   return renderMarkdownBlocks(text).map(function (b) { return b.html; }).join('');
 }
 function openMemoView() {
-  var existing = document.getElementById('mc-memo');
-  if (existing) { existing.remove(); return; } // the shortcut toggles: a second press closes the memo
-  var modal = document.createElement('div');
-  modal.id = 'mc-memo';
-  modal.className = 'mc-modal';
-  var panel = document.createElement('div');
-  panel.className = 'mc-modal-panel mc-memo-panel';
-  var head = document.createElement('div');
-  head.className = 'mc-modal-head';
-  var title = document.createElement('span');
-  title.setAttribute('data-i18n', 'memo.title');
-  title.textContent = t('memo.title');
-  var closeBtn = document.createElement('button');
-  closeBtn.type = 'button';
-  closeBtn.className = 'mc-btn mc-ghost';
-  closeBtn.setAttribute('data-i18n', 'merged.close');
-  closeBtn.textContent = t('merged.close');
-  closeBtn.addEventListener('click', function () { modal.remove(); });
-
-  var body = document.createElement('div');
-  body.className = 'mc-memo-body';
+  if (document.getElementById('mc-memo-panel')) { closeMergedMemoDocks(); return; } // the shortcut toggles: 2nd press closes
+  var dock = mountDock('mc-memo-panel', t('memo.title'));
+  var memoBody = document.createElement('div');
+  memoBody.className = 'mc-memo-body';
   var area = document.createElement('textarea');
   area.className = 'mc-modal-text mc-memo-edit';
   area.spellcheck = false;
@@ -2430,45 +2571,25 @@ function openMemoView() {
     saveMemo(area.value);
     preview.innerHTML = renderMemoMd(area.value);
   });
-
-  // Terminal send: hand the current draft to pane-pick mode (arrows choose the session, Enter sends). Shown
-  // only once a terminal pane exists; enterSendMode reopens the panel if it was closed.
-  var sendBtn = null;
+  // Terminal send: hand the current draft to pane-pick mode. Shown only once a terminal pane exists;
+  // enterSendMode reopens the terminal (which closes this memo dock — the slot is exclusive).
   if (window.__monacoriTerminal && typeof window.__monacoriTerminal.paneCount === 'function' && window.__monacoriTerminal.paneCount() > 0) {
-    sendBtn = document.createElement('button');
+    var sendBtn = document.createElement('button');
     sendBtn.type = 'button';
-    sendBtn.className = 'mc-btn mc-send-term';
+    sendBtn.className = 'dock-btn mc-send-term';
     sendBtn.setAttribute('data-i18n', 'merged.sendToTerminal');
     sendBtn.textContent = t('merged.sendToTerminal');
     sendBtn.addEventListener('click', function () {
       var text = area.value;
-      modal.remove();
+      dock.close();
       window.__monacoriTerminal.enterSendMode(text);
     });
+    dock.bar.insertBefore(sendBtn, dock.bar.querySelector('.dock-max'));
   }
-
-  head.appendChild(title);
-  if (sendBtn) head.appendChild(sendBtn);
-  head.appendChild(closeBtn);
-  body.appendChild(area);
-  body.appendChild(preview);
-  panel.appendChild(head);
-  panel.appendChild(body);
-  modal.appendChild(panel);
-  modal.addEventListener('mousedown', function (e) { if (e.target === modal) modal.remove(); });
-  modal.addEventListener('keydown', function (e) { if (e.key === 'Escape') { e.preventDefault(); modal.remove(); } });
-  document.body.appendChild(modal);
-  // Focus the editor; Electron async-restores focus to <body>, so retry briefly (same as the composer/merged view).
-  var memoFocusTries = 0;
-  var tryFocusMemo = function () {
-    if (!document.getElementById('mc-memo')) return true;
-    if (document.activeElement === area) return true;
-    try { area.focus(); } catch (e) {}
-    return document.activeElement === area;
-  };
-  if (!tryFocusMemo()) {
-    var memoFocusIv = setInterval(function () { if (tryFocusMemo() || ++memoFocusTries > 12) clearInterval(memoFocusIv); }, 25);
-  }
+  memoBody.appendChild(area);
+  memoBody.appendChild(preview);
+  dock.body.appendChild(memoBody);
+  focusDockField(area, '#mc-memo-panel');
 }
 
 document.addEventListener('click', function (event) {
@@ -2674,10 +2795,13 @@ refreshComments();
 
   function isOpen() { return !panel.classList.contains('hidden'); }
   function setOpen(open) {
+    // The terminal shares the bottom dock slot with merged/memo — opening it closes those (exclusive slot).
+    if (open && typeof window.__monacoriCloseDocks === 'function') { try { window.__monacoriCloseDocks(); } catch (e) {} }
     panel.classList.toggle('hidden', !open);
     document.body.classList.toggle('terminal-open', open);
     if (toggleBtn) toggleBtn.classList.toggle('is-active', open);
     try { sessionStorage.setItem(openKey, open ? '1' : '0'); } catch (e) {}
+    if (typeof applyDockMaximized === 'function') applyDockMaximized(); // keep Cmd+Shift+' maximize in sync
     if (open) {
       if (panes.length === 0) makePane();
       requestAnimationFrame(function () { fitAll(); if (active) try { active.term.focus(); } catch (e) {} });
@@ -3096,6 +3220,10 @@ function applyDiffUpdate(u) {
   sourceLinks = Array.from(document.querySelectorAll('.source-link'));
 
   // 3) Reset lazy-materialize + index state so the new diff bodies / source / symbols rebuild on demand.
+  // bodyCache is keyed by file INDEX, not content — after a watch rebuild the same index maps to the new
+  // body, so it MUST be dropped too. Clearing only bodyPromise left loadBodyHtml() returning the cached
+  // OLD body, so a watch change never showed up in the diff until a full reload.
+  bodyCache = {};
   bodyPromise = {};
   diffBootDone = false;
   sourceLoaded = !REVIEW_LAZY_LOAD; // lazyLoad: re-fetch source content on next use

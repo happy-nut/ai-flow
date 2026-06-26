@@ -47,6 +47,56 @@ export function renderNotGitRepoHtml(root: string): string {
   ].join("\n");
 }
 
+// Welcome screen for the packaged .app (double-clicked, no cwd): an "Open Folder" button that asks the main
+// process (window.monacoriApp.openFolder, exposed via preload) to pick a git repo and load its review.
+export function renderWelcomeHtml(light = false): string {
+  const bg = light ? "#ffffff" : "#2b2b2b";
+  const fg = light ? "#1f2328" : "#a9b7c6";
+  return [
+    "<!doctype html>",
+    '<html lang="en">',
+    "<head>",
+    '<meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1">',
+    "<title>Monacori</title>",
+    "<style>",
+    "* { box-sizing: border-box; }",
+    `body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: ${bg}; color: ${fg}; font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }`,
+    ".card { max-width: 520px; padding: 40px; text-align: center; }",
+    ".card .badge { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: #808080; }",
+    ".card h1 { font-size: 24px; margin: 12px 0 14px; color: #4a88c7; }",
+    ".card p { font-size: 14px; line-height: 1.7; margin: 10px 0; }",
+    ".open-btn { margin-top: 22px; padding: 10px 24px; font-size: 14px; font-weight: 600; color: #fff; background: #4a88c7; border: 0; border-radius: 8px; cursor: pointer; }",
+    ".open-btn:hover { background: #3f78b3; }",
+    ".open-btn:disabled { opacity: 0.6; cursor: default; }",
+    ".hint { color: #d36c6c; font-size: 12px; min-height: 16px; margin-top: 16px; }",
+    "</style>",
+    "</head>",
+    "<body>",
+    '<div class="card">',
+    '<div class="badge">monacori</div>',
+    "<h1>Review a Git repository</h1>",
+    "<p>Pick a folder under Git version control to review its changes.</p>",
+    '<button class="open-btn" id="open" type="button">Open Folder…</button>',
+    '<p class="hint" id="hint"></p>',
+    "</div>",
+    "<script>",
+    "var btn = document.getElementById('open'), hint = document.getElementById('hint');",
+    "btn.addEventListener('click', function () {",
+    "  if (!(window.monacoriApp && window.monacoriApp.openFolder)) { hint.textContent = 'Open Folder is unavailable.'; return; }",
+    "  btn.disabled = true; hint.textContent = '';",
+    "  window.monacoriApp.openFolder().then(function (r) {",
+    "    btn.disabled = false;",
+    "    if (r && r.ok) return;",
+    "    if (r && r.error === 'not-git') hint.textContent = 'That folder is not a Git repository.';",
+    "  }).catch(function () { btn.disabled = false; });",
+    "});",
+    "</script>",
+    "</body>",
+    "</html>",
+  ].join("\n");
+}
+
 // Above a size threshold the diff is rendered "lazily": each file's heavy body
 // (the side-by-side tables — hundreds of thousands of rows on big repos) is moved
 // out of the live DOM into an inert <script type="text/html"> island, leaving only
@@ -249,6 +299,7 @@ export function renderDiffHtml(input: {
     '<kbd>Cmd/Ctrl+Shift+W</kbd><span data-i18n="kbd.ignoreWhitespace">Ignore whitespace</span>' +
     '<kbd>Cmd/Ctrl+Enter</kbd><span data-i18n="kbd.saveComment">Save comment</span>' +
     '<kbd>Cmd/Ctrl+Shift+N</kbd><span data-i18n="kbd.promptMemo">Prompt memo</span>' +
+    '<kbd>Cmd/Ctrl+Shift+&#39;</kbd><span data-i18n="kbd.maximizePanel">Maximize panel</span>' +
     '</div>' +
     '<div class="keys-cat" data-i18n="settings.kbd.cat.terminal">Terminal</div>' +
     '<div class="keys-grid">' +

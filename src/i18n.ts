@@ -21,6 +21,8 @@ export const MESSAGES: Record<string, Record<string, string>> = {
     "terminal.title": "Terminal",
     "terminal.toggle": "Toggle terminal (Ctrl+`)",
     "terminal.close": "Close terminal",
+    "dock.maximize": "Maximize panel (Cmd/Ctrl+Shift+')",
+    "dock.restore": "Restore panel (Cmd/Ctrl+Shift+')",
 
     // Review status (toolbar) — units; the numeric count stays dynamic and is prepended at runtime.
     "status.files": "files",
@@ -108,6 +110,7 @@ export const MESSAGES: Record<string, Record<string, string>> = {
     "kbd.ignoreWhitespace": "Ignore whitespace",
     "kbd.saveComment": "Save comment",
     "kbd.promptMemo": "Prompt memo",
+    "kbd.maximizePanel": "Maximize panel (terminal / merged / memo)",
     "kbd.toggleTerminal": "Toggle terminal",
     "kbd.splitPane": "Split pane",
     "kbd.focusPane": "Focus prev / next pane",
@@ -167,6 +170,8 @@ export const MESSAGES: Record<string, Record<string, string>> = {
     "terminal.title": "터미널",
     "terminal.toggle": "터미널 토글 (Ctrl+`)",
     "terminal.close": "터미널 닫기",
+    "dock.maximize": "패널 최대화 (Cmd/Ctrl+Shift+')",
+    "dock.restore": "패널 복원 (Cmd/Ctrl+Shift+')",
 
     // Review status (toolbar)
     "status.files": "개 파일",
@@ -254,6 +259,7 @@ export const MESSAGES: Record<string, Record<string, string>> = {
     "kbd.ignoreWhitespace": "공백 무시",
     "kbd.saveComment": "코멘트 저장",
     "kbd.promptMemo": "프롬프트 메모",
+    "kbd.maximizePanel": "패널 최대화 (터미널 / 합본 / 메모)",
     "kbd.toggleTerminal": "터미널 토글",
     "kbd.splitPane": "패널 분할",
     "kbd.focusPane": "이전 / 다음 패널로 이동",

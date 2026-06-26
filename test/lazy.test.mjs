@@ -45,3 +45,36 @@ test("lazy-LOAD: switching files shows the new file's content, never a stale bod
   assert.doesNotMatch(body, /one = 11/, "stale src/one.ts body is gone (sourceBodyPath guard)");
   v.close();
 });
+
+// REGRESSION: a watch refresh (in-place diff update) cleared bodyPromise but NOT bodyCache, which is keyed
+// by file INDEX. loadBodyHtml then returned the cached OLD body for the same index, so a working-tree change
+// never appeared in the diff until a full reload. applyDiffUpdate must drop bodyCache too.
+test("lazy-LOAD: a watch refresh shows the rebuilt diff body, not the cached old one", async () => {
+  const b1 = await makeReviewHtml(
+    [{ path: "src/live.ts", before: "export const x = 1;\n", after: "export const x = 111;\n" }],
+    { lazyLoad: true },
+  );
+  let bodies = b1.build.lazyBodies || [];
+  const v = await loadViewer(b1.html, {
+    menuBridge: true,
+    lazySourceData: b1.build.lazySourceData,
+    getDiffBody: (idx) => bodies[idx] || "",
+  });
+  await v.openDiffFor("src/live.ts");
+  await v.settle(120);
+  assert.match(v.$("#diff2html-container").textContent, /111/, "initial diff body shown");
+
+  // A watch rebuild changes the SAME file again -> a new body for the same index.
+  const b2 = await makeReviewHtml(
+    [{ path: "src/live.ts", before: "export const x = 1;\n", after: "export const x = 222;\n" }],
+    { lazyLoad: true },
+  );
+  bodies = b2.build.lazyBodies || []; // the bridge now serves the rebuilt body for that index
+  await v.pushDiffUpdate(b2.build.update);
+  await v.settle(120);
+
+  const text = v.$("#diff2html-container").textContent;
+  assert.match(text, /222/, "rebuilt body shown after the watch refresh");
+  assert.doesNotMatch(text, /111/, "stale cached body is gone");
+  v.close();
+});

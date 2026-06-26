@@ -602,7 +602,7 @@ test("merged view: select-all Opt+Enter lists send-to-terminal first then remove
   const v = await loadViewer(html);
   // Mock an open terminal so the send-to-terminal dropdown item is offered.
   let sent = null;
-  v.window.__monacoriTerminal = { isOpen: () => true, enterSendMode: (text) => { sent = text; } };
+  v.window.__monacoriTerminal = { isOpen: () => true, paneCount: () => 1, close: () => {}, enterSendMode: (text) => { sent = text; } };
   await v.openSourceFile("src/app.ts");
   await v.clickSourceLine(1);
   await v.openComposer("q");
@@ -628,33 +628,33 @@ test("merged view: select-all Opt+Enter lists send-to-terminal first then remove
   items[0].click();
   await v.settle(40);
   assert.ok(sent && /shipit/.test(sent), "send-to-terminal received the merged text");
-  assert.equal(v.$("#mc-modal"), null, "modal closed after send");
+  assert.equal(v.$("#mc-merged-panel"), null, "merged dock closed after send");
   v.close();
 });
 
-test("floating overlay swallows global shortcuts (F7) until it closes — one focus, one caret", async () => {
+test("a focused merged dock swallows global shortcuts (F7) until focus leaves it — one focus, one caret", async () => {
   const v = await loadViewer(html);
   await v.openSourceFile("src/app.ts");
   await v.clickSourceLine(0);
   await v.openComposer("q");
   await v.writeAndSave("note");
-  v.key("?", { metaKey: true }); // Cmd+? opens the merged questions overlay
+  v.key("?", { metaKey: true }); // Cmd+? opens the merged questions dock (textarea takes focus)
   await v.settle(80);
-  assert.ok(v.$("#mc-modal"), "merged overlay open");
+  assert.ok(v.$("#mc-merged-panel"), "merged dock open");
 
   let navs = 0;
   const orig = v.window.setActive;
   v.window.setActive = function () { navs += 1; return orig.apply(this, arguments); };
-  v.key("F7"); // a global nav shortcut, dispatched underneath the overlay
+  v.key("F7"); // a global nav shortcut, dispatched while the dock owns focus
   await v.settle(40);
-  assert.equal(navs, 0, "F7 is swallowed while the overlay owns focus (no navigating a hidden panel)");
-  assert.ok(v.$("#mc-modal"), "overlay stays open — only Esc/close dismisses it, not a nav key");
+  assert.equal(navs, 0, "F7 is swallowed while the dock owns focus (no navigating behind it)");
+  assert.ok(v.$("#mc-merged-panel"), "dock stays open — only Esc/close dismisses it, not a nav key");
 
-  v.$("#mc-modal").remove(); // close the overlay
+  v.$("#mc-merged-panel").remove(); // close the dock (focus returns to <body>)
   v.key("F7");
   await v.settle(40);
   v.window.setActive = orig;
-  assert.ok(navs >= 1, "F7 navigates again once the overlay is closed");
+  assert.ok(navs >= 1, "F7 navigates again once the dock no longer owns focus");
   v.close();
 });
 

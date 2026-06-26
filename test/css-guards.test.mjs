@@ -32,11 +32,19 @@ test("diff stays scrollable for a single big file: .d2h-file-wrapper keeps flex-
   assert.match(css, /diff2html-container[^{}]*\{[^}]*flex-direction:\s*column/s, "precondition: container is a COLUMN flexbox");
 });
 
-test("a floating overlay hides the file's blinking caret beneath it (single visible caret)", () => {
-  // The merged-comments / prompt-memo / settings overlay owns the only caret while open. jsdom has no :has()
-  // and no layout, so guard the rule as text: the file's .code-cursor must be display:none under each overlay
-  // selector, so two carets can never blink across visible panels ("커서는 보이는 패널 통틀어 하나만").
-  assert.match(css, /body:has\(#mc-modal\)\s*\.code-cursor[\s\S]{0,200}display:\s*none/, "merged overlay hides the file caret");
-  assert.match(css, /body:has\(#mc-memo\)\s*\.code-cursor/, "prompt-memo overlay covered");
+test("a focused dock / settings overlay hides the file's blinking caret beneath it (single visible caret)", () => {
+  // A focused merged/memo dock (or the settings overlay) owns the only caret. jsdom has no :has() and no
+  // layout, so guard the rule as text: the file's .code-cursor must be display:none while the dock has focus
+  // (or settings is up), so two carets can never blink across visible panels ("커서는 보이는 패널 통틀어 하나만").
+  assert.match(css, /body:has\(\.dock-panel:focus-within\)\s*\.code-cursor[\s\S]{0,200}display:\s*none/, "a focused dock hides the file caret");
   assert.match(css, /body:has\(#settings-modal:not\(\.hidden\)\)\s*\.code-cursor/, "settings overlay covered");
+});
+
+test("the comment composer textarea restores its own caret (not transparent-inherited from the diff)", () => {
+  // .mc-input is injected INSIDE #diff2html-container, which sets caret-color: transparent (the file view
+  // uses a fake .code-cursor). caret-color inherits, so .mc-input must restore it — a focused textarea must
+  // show its real caret. (The single-caret rule hides the FILE caret while composing, not the textarea's.)
+  const input = ruleBodyContaining(".mc-input");
+  assert.ok(input, ".mc-input rule must exist");
+  assert.match(input, /caret-color:\s*var\(--text\)/, ".mc-input restores caret-color so the composer caret is visible");
 });

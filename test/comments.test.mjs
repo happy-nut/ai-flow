@@ -80,6 +80,7 @@ test("diff view: clicking Save persists the comment", async () => {
   assert.deepEqual(v.visibleCardTexts(), ["diff-view comment"]);
   v.close();
 });
+// Keyboard navigation of comment boxes (arrow-stop, edit, delete) lives in comment-nav.test.mjs.
 
 test("Cmd+Enter saves from the focused composer", async () => {
   const v = await loadViewer(html);

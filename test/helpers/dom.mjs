@@ -82,11 +82,13 @@ export async function loadViewer(html, opts = {}) {
       if (opts.menuBridge) {
         window.monacoriMenu = { onDiffUpdate: (cb) => { window.__diffUpdateCb = cb; } };
       }
-      // lazy-LOAD source bridge: serve the source content (lazySourceData JSON) on demand, as Electron/serve do.
-      if (opts.lazySourceData != null) {
+      // lazy-LOAD source/diff bridge: serve source content + per-index diff bodies on demand, as
+      // Electron/serve do. opts.getDiffBody(index, kind) lets a test swap the served body between builds
+      // (watch refresh), which is how the stale-bodyCache regression is reproduced.
+      if (opts.lazySourceData != null || opts.getDiffBody) {
         window.monacoriFile = {
-          getSourceData: () => Promise.resolve(opts.lazySourceData),
-          get: () => Promise.resolve(""),
+          getSourceData: () => Promise.resolve(opts.lazySourceData ?? "[]"),
+          get: (index, kind) => Promise.resolve(opts.getDiffBody ? opts.getDiffBody(Number(index), kind) : ""),
         };
       }
     },
@@ -158,6 +160,16 @@ class Viewer {
     if (dv && !dv.classList.contains("hidden")) return "diff";
     return null;
   }
+  /** The change-list file currently marked active (i.e. the file the diff is showing), or null. */
+  activeDiffFile() {
+    const link = this.$("#changes-panel .file-link.active");
+    return link ? link.dataset.file || null : null;
+  }
+  /** Is the quick-open (Shift Shift / Cmd+E / find-in-files) overlay visible? */
+  quickOpenVisible() {
+    const qo = this.$("#quick-open");
+    return !!(qo && !qo.classList.contains("hidden"));
+  }
   /** The composer textarea the user can actually see — the gate the regression turned on. */
   visibleComposerInput() {
     const inputs = this.$all(".mc-composer .mc-input");
@@ -175,6 +187,22 @@ class Viewer {
   visibleCardTexts() {
     const root = this.visibleView() === "diff" ? "#diff2html-container" : "#source-body";
     return this.$all(`${root} .mc-card:not(.mc-composer) .mc-card-body`).map((b) => b.textContent);
+  }
+  /** The comment box currently selected via arrow-key navigation (caret-stop), in the on-screen view. */
+  selectedCommentBox() {
+    const root = this.visibleView() === "diff" ? "#diff2html-container" : "#source-body";
+    return this.$(`${root} .mc-comment-row.mc-row-selected`);
+  }
+  /** The diff row the caret currently sits on (mc-diff-cursor-row), or null when none is rendered. */
+  diffCaretRow() {
+    return this.$("#diff2html-container .mc-diff-cursor-row");
+  }
+  /** The new-side line number the diff caret is on, or null. */
+  diffCaretLine() {
+    const row = this.diffCaretRow();
+    const n = row && row.querySelector(".d2h-code-side-linenumber");
+    const v = n ? parseInt((n.textContent || "").trim(), 10) : NaN;
+    return Number.isFinite(v) ? v : null;
   }
 
   // ---- low-level events ------------------------------------------------------------------------
@@ -279,9 +307,22 @@ class Viewer {
     });
     await this.settle(40);
   }
+  /** Toggle the prompt memo dock (Cmd/Ctrl+Shift+N). */
+  async openMemo() {
+    this.key("n", { metaKey: true, shiftKey: true, code: "KeyN" });
+    await this.settle(40);
+  }
+  /** Maximize/restore the active dock (Cmd/Ctrl+Shift+'). */
+  toggleDockMax() {
+    this.key("'", { metaKey: true, shiftKey: true, code: "Quote" });
+  }
+  /** Is the bottom dock currently maximized over the editor area? */
+  isDockMaximized() {
+    return this.document.body.classList.contains("dock-maximized");
+  }
   /** The read-only text of the open merged-prompt modal, or null if none is open. */
   mergedModalText() {
-    const area = this.$("#mc-modal .mc-modal-text");
+    const area = this.$("#mc-merged-panel .mc-modal-text");
     return area ? area.value : null;
   }
   /** Type into the visible composer and save with Cmd+Enter (the keyboard path). */
