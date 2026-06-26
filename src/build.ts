@@ -17,10 +17,12 @@ export function buildDiffReview(input: {
   lazy?: boolean; // force lazy materialize (shells + on-demand bodies); auto for big repos
   lazyLoad?: boolean; // serve/Electron set this — bodies + source fetched on demand, not embedded
   app?: boolean; // Electron app — inlines the integrated terminal (xterm); off for serve/standalone/tests
+  root?: string; // repo to review; defaults to process.cwd() (serve/CLI). Electron passes it per-window.
 }): DiffReviewBuild {
-  if (!isGitRepository(process.cwd())) {
+  const root = input.root ?? process.cwd();
+  if (!isGitRepository(root)) {
     return {
-      html: renderNotGitRepoHtml(process.cwd()),
+      html: renderNotGitRepoHtml(root),
       files: 0,
       hunks: 0,
       signature: "not-a-git-repo",
@@ -33,11 +35,12 @@ export function buildDiffReview(input: {
     context: input.context,
     includeUntracked: input.includeUntracked,
     ignoreWhitespace: input.ignoreWhitespace,
+    root,
   });
   const files = parseUnifiedDiff(diffText);
-  const sourceFiles = collectSourceFiles(files);
+  const sourceFiles = collectSourceFiles(files, root);
   const fileStates = collectReviewFileStates(files, sourceFiles);
-  const httpEnvironments = collectHttpEnvironments(process.cwd());
+  const httpEnvironments = collectHttpEnvironments(root);
   const hunks = files.reduce((sum, file) => sum + file.hunks.length, 0);
   const generatedAt = new Date().toISOString();
   const diffHtml = renderDiff2Html(diffText);
@@ -70,8 +73,8 @@ export function buildDiffReview(input: {
     httpEnvironments,
     title: input.title,
     subtitle: diffSubtitle(input),
-    projectName: basename(process.cwd()),
-    projectPath: process.cwd(),
+    projectName: basename(root),
+    projectPath: root,
     watch: Boolean(input.watch),
     ignoreWhitespace: Boolean(input.ignoreWhitespace),
     app: Boolean(input.app),

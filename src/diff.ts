@@ -18,8 +18,9 @@ export function readUnifiedDiff(options: {
   context: number;
   includeUntracked: boolean;
   ignoreWhitespace?: boolean;
+  root?: string;
 }): string {
-  const root = repoRoot();
+  const root = repoRoot(options.root);
   const args = ["diff", "--no-ext-diff", "--find-renames", `--unified=${options.context}`];
   if (options.ignoreWhitespace) args.push("--ignore-all-space");
   if (options.staged) {
@@ -229,7 +230,7 @@ function gitStatusMap(cwd: string): Map<string, "new" | "edited" | "staged"> {
   return map;
 }
 
-export function collectSourceFiles(diffFiles: DiffFile[]): SourceFile[] {
+export function collectSourceFiles(diffFiles: DiffFile[], rootArg?: string): SourceFile[] {
   const changed = new Set(
     diffFiles
       .map((file) => file.displayPath)
@@ -246,7 +247,7 @@ export function collectSourceFiles(diffFiles: DiffFile[]): SourceFile[] {
     }
     changedLinesByPath.set(file.displayPath, nums);
   }
-  const root = repoRoot();
+  const root = repoRoot(rootArg);
   const vcsByPath = gitStatusMap(root);
   for (const file of diffFiles) {
     const kind = vcsByPath.get(file.displayPath);
