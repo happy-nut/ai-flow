@@ -328,23 +328,21 @@ body {
 .keys-grid { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 5px 10px; align-items: center; margin-bottom: 2px; }
 .keys-grid kbd {
   justify-self: start;
-  /* inline-block (not inline-flex) so the spaces in "⌘1 / ⌘0" survive; a bare grid item collapsed to
-     ~0 height, but explicit line-height keeps it sized. The larger .kmod glyphs align via vertical-align. */
   display: inline-block;
-  font-family: Monaco, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 13px;       /* letters/numbers stay this size — only the modifier glyphs below are enlarged */
-  font-weight: 600;
+  /* System font (NOT monospace): in monospace the ⌘/⇧/⌥ glyphs are squeezed into the cell and read tiny
+     next to letters, which is what made enlarging them look mismatched. The system font renders the
+     modifier glyphs at their natural size — like a macOS menu — so one uniform size looks right. */
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
   line-height: 1.3;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 0;
-  padding: 4px 9px;
+  padding: 3px 8px;
   color: var(--text);
   white-space: nowrap;
 }
-/* Only the modifier symbols (⌘ ⇧ ⌥ ⌃) — they render small/thin in monospace, so enlarge just them
-   (wrapped in .kmod by the renderer), leaving keys like 0/1/F7/W at the base size. */
-.keys-grid kbd .kmod { font-size: 17px; line-height: 1; vertical-align: -2px; }
 .keys-grid span { color: var(--muted); }
 .diff2html-container { min-width: 0; caret-color: transparent; }
 .mc-diff-cursor-row .d2h-code-side-line { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--active) 70%, transparent); }

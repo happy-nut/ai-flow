@@ -25,16 +25,6 @@ function syncRail() {
   var hv = document.getElementById('history-view');
   setOn('history', !!(hv && !hv.classList.contains('hidden')));
 }
-// Wrap the modifier symbols (⌘ ⇧ ⌥ ⌃) inside the Settings shortcut kbds in a .kmod span so CSS can
-// enlarge ONLY those glyphs (they read small/thin in monospace) while letters/numbers keep the base size.
-// Run once at init; kbds without a modifier are left untouched (preserving entities like &nbsp;).
-function enlargeKbdModifiers() {
-  var mods = /[⌘⇧⌥⌃]/g; // ⌘ ⇧ ⌥ ⌃
-  document.querySelectorAll('.keys-grid kbd').forEach(function (k) {
-    var wrapped = k.textContent.replace(mods, '<span class="kmod">$&</span>');
-    if (wrapped !== k.textContent) k.innerHTML = wrapped;
-  });
-}
 // Rail click for the merged views toggles: a 2nd click on the open kind closes it (memo already toggles).
 function toggleMergedRail(kind) {
   var m = document.getElementById('mc-merged-panel');
