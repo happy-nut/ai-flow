@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification } from "electron";
 import { buildDiffReview, performHttpRequest, type HttpSendRequest } from "./cli.js";
 import { sanitizeTerminalEnv, ensureUtf8Locale } from "./util.js";
+import { readGitLog, readCommitDiff } from "./git-log.js";
 import { readUnifiedDiff } from "./diff.js";
 import { isGitRepository } from "./git.js";
 import { renderWelcomeHtml } from "./render.js";
@@ -126,6 +127,18 @@ ipcMain.handle("monacori:get-file", (event, request: { index?: number }) => {
 });
 // Phase 2b lazy-LOAD: serve the full source files JSON (with content) for the calling window on demand.
 ipcMain.handle("monacori:get-source-data", (event) => stateFromEvent(event)?.sourceData ?? "[]");
+
+// Git history view (Cmd+9): the log list and a single commit's full diff, for the calling window's repo.
+ipcMain.handle("monacori:git-log", (event, request: { limit?: number; skip?: number }) => {
+  const state = stateFromEvent(event);
+  if (!state) return [];
+  try { return readGitLog(state.options.root, { limit: request?.limit, skip: request?.skip }); } catch { return []; }
+});
+ipcMain.handle("monacori:git-commit-diff", (event, request: { sha?: string }) => {
+  const state = stateFromEvent(event);
+  if (!state || !request?.sha) return null;
+  try { return readCommitDiff(state.options.root, request.sha); } catch { return null; }
+});
 
 // Welcome screen's "Open Folder" button: pick a directory; load it into the window that asked if it's a
 // git repo, else return the "not-git" code so the welcome renderer can show its inline hint (it keys off

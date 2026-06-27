@@ -49,6 +49,12 @@ contextBridge.exposeInMainWorld("monacoriFile", {
   getSourceData: (): Promise<string> => ipcRenderer.invoke("monacori:get-source-data"),
 });
 
+// Git history view (Cmd+9): list commits and fetch one commit's full diff for the current window's repo.
+contextBridge.exposeInMainWorld("monacoriGit", {
+  log: (request: { limit?: number; skip?: number }): Promise<unknown> => ipcRenderer.invoke("monacori:git-log", request),
+  commitDiff: (sha: string): Promise<unknown> => ipcRenderer.invoke("monacori:git-commit-diff", { sha }),
+});
+
 // Self-update: ask the main process to install the latest version globally and relaunch. Only present
 // in the Electron app (not browser/watch mode), so the renderer hides the in-app update button there.
 contextBridge.exposeInMainWorld("monacoriUpdate", {

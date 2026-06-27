@@ -1,6 +1,8 @@
 function isFloatingModalOpen() {
   var sm = document.getElementById('settings-modal');
   if (sm && !sm.classList.contains('hidden')) return true;
+  var hv = document.getElementById('history-view');
+  if (hv && !hv.classList.contains('hidden')) return true; // history overlay owns the keys (Esc/filter/click)
   // The merged/memo panels are now docked (inline), not overlays — but while one OWNS focus we still stand
   // down the global nav shortcuts so typing / ▲▼ inside it isn't hijacked. Focus elsewhere -> shortcuts run.
   return isDockFocused();
@@ -32,6 +34,12 @@ document.addEventListener('keydown', (event) => {
   if (!settingsUp && (event.metaKey || event.ctrlKey) && event.shiftKey && !event.altKey && (event.code === 'KeyN' || event.key === 'n' || event.key === 'N')) {
     event.preventDefault();
     openMemoView();
+    return;
+  }
+  // Cmd/Ctrl+9 toggles the git history view (above the focus guard so a 2nd press closes it from inside).
+  if (!settingsUp && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && (event.code === 'Digit9' || event.key === '9') && typeof toggleHistory === 'function') {
+    event.preventDefault();
+    toggleHistory();
     return;
   }
 
@@ -347,6 +355,7 @@ document.querySelector('.activity-rail')?.addEventListener('click', (event) => {
   else if (view === 'files') { setTab('files'); }
   else if (view === 'q' || view === 'c') { toggleMergedRail(view); }
   else if (view === 'memo') { openMemoView(); } // openMemoView already toggles
+  else if (view === 'history') { toggleHistory(); }
   syncRail();
 });
 

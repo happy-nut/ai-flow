@@ -22,6 +22,8 @@ function syncRail() {
   setOn('q', !!(merged && merged.dataset.kind === 'q'));
   setOn('c', !!(merged && merged.dataset.kind === 'c'));
   setOn('memo', !!document.getElementById('mc-memo-panel'));
+  var hv = document.getElementById('history-view');
+  setOn('history', !!(hv && !hv.classList.contains('hidden')));
 }
 // Rail click for the merged views toggles: a 2nd click on the open kind closes it (memo already toggles).
 function toggleMergedRail(kind) {

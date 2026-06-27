@@ -241,6 +241,10 @@ export function renderDiffHtml(input: {
     railButton("memo", "memo.title", "Prompt memo", "⌘⇧N", '<rect x="5.5" y="4" width="13" height="16" rx="1.5"/><line x1="8.5" y1="9" x2="15.5" y2="9"/><line x1="8.5" y1="12.5" x2="15.5" y2="12.5"/><line x1="8.5" y1="16" x2="12.5" y2="16"/>'),
     "</div>",
     '<div class="rail-group rail-bottom">',
+    // History (Cmd+9): Electron only — the git-log bridge (window.monacoriGit) is exposed there.
+    input.app
+      ? railButton("history", "rail.history", "History", "⌘9", '<circle cx="12" cy="12" r="8.3"/><path d="M12 7.4v5l3.2 1.9"/>')
+      : "",
     // Terminal (Electron only; #terminal-toggle stays hidden until a pty exists). Same id → the existing
     // toggle handler + is-active sync in dock-terminal.js bind to it unchanged.
     input.app
@@ -402,6 +406,19 @@ export function renderDiffHtml(input: {
     '<div class="settings-actions"><button type="button" id="settings-reset" class="plain-button" data-i18n="mergePrompts.reset">Reset to defaults</button><span id="settings-saved" class="settings-saved"></span></div>',
     "</section>",
     "</div>",
+    "</div>",
+    "</div>",
+    // Git history (Cmd+9): full-screen overlay — commit list (with graph lanes) on the left, the selected
+    // commit's message + diff on the right. Populated lazily by the renderer from window.monacoriGit.
+    '<div id="history-view" class="history-view hidden" role="dialog" aria-modal="true" data-i18n-aria="history.title" aria-label="Git history">',
+    '<div class="history-bar">',
+    '<span class="history-title" data-i18n="history.title">History</span>',
+    '<input id="history-search" type="search" class="history-search" autocomplete="off" spellcheck="false" data-i18n-ph="history.search" placeholder="Filter by message or author">',
+    '<button type="button" id="history-close" class="dock-btn" data-i18n-title="history.close" title="Close" aria-label="Close">&times;</button>',
+    "</div>",
+    '<div class="history-body">',
+    '<div id="history-list" class="history-list"></div>',
+    '<div id="history-detail" class="history-detail"></div>',
     "</div>",
     "</div>",
     input.diffIslands || "",
