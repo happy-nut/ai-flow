@@ -22,6 +22,7 @@
     "assets",
     "scripts/patch-electron-name.mjs",
     "scripts/fix-pty-spawn-helper.mjs",
+    "scripts/record-demo.mjs",
     "README.md",
     "LICENSE"
   ],
@@ -34,6 +35,7 @@
     "icon": "node scripts/gen-icon.mjs",
     "postinstall": "node scripts/patch-electron-name.mjs && node scripts/fix-pty-spawn-helper.mjs",
     "prepare": "npm run build",
+    "demo:gif": "npm run build && electron scripts/record-demo.mjs",
     "smoke": "npm run build && node dist/cli.js --help",
     "pretest": "npm run build",
     "test": "node --test test/*.test.mjs",

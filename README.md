@@ -2,9 +2,9 @@
 
 **A local desktop review workspace for AI-generated code changes.**
 
-Run `mo` after an AI edits your repository. monacori opens a side-by-side diff, lets you attach line-level questions or change requests, and bundles that feedback back into the AI CLI (command-line interface) session running in the built-in terminal.
+Run `mo` after an AI edits your repository. monacori opens the real local diff, lets you attach line-level questions or change requests, and turns that feedback into a grounded follow-up prompt for the AI CLI session running in the built-in terminal.
 
-![monacori reviewing a diff, adding a change request, and targeting the built-in terminal](assets/monacori-demo.gif)
+![monacori reviewing an AI-generated diff, adding a line-level change request, merging the prompt, and sending it to the integrated terminal](assets/monacori-core-flow.gif)
 
 ## Why monacori
 
@@ -15,6 +15,15 @@ AI coding tools are fast, but their "done" message is not a review. monacori giv
 - Leave questions or change requests directly on the relevant line.
 - Send all reviewer comments, with file paths and code context, into `claude`, `codex`, or another terminal session without copy-paste.
 - Keep all generated review state local, plain, and inspectable under `.monacori/`.
+
+## Core Flow
+
+monacori's core value is a grounded correction loop:
+
+1. Review the exact Git diff produced by an AI coding tool.
+2. Attach a question or change request on the relevant line.
+3. Merge those comments into a prompt that includes file paths, line numbers, and code context.
+4. Send the prompt into the integrated terminal so the next AI turn starts from reviewed evidence, not a chat summary.
 
 ## Workflow
 
@@ -88,6 +97,12 @@ npm unlink -g @happy-nut/monacori     # restore the published `mo`
 
 `src/viewer.client.js` and `src/viewer.css` are copied (not compiled) into `dist/` by the build, so
 re-run `npm run build` (or `npm run dev`) after editing them.
+
+Regenerate the README demo GIF from a temporary sample repository:
+
+```bash
+npm run demo:gif
+```
 
 ### Tests
 
