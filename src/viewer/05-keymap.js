@@ -43,6 +43,7 @@ document.addEventListener('keydown', (event) => {
     toggleHistory();
     return;
   }
+  if (typeof isHistoryOpen === 'function' && isHistoryOpen() && typeof handleHistoryKey === 'function' && handleHistoryKey(event)) return;
 
   // Settings overlay (or a focused merged/memo dock) captures keys: stand down the rest of the global
   // shortcuts (Cmd+1, F7, Cmd+[/], Cmd+B, …). Each has its own Esc + editing handlers.
@@ -505,4 +506,3 @@ window.addEventListener('beforeunload', saveUiState);
   });
   ensureDiffCursor();
 })();
-

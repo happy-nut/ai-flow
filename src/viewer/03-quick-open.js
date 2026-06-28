@@ -177,10 +177,18 @@ function allQuickItems() {
   }));
 }
 
+// The agent's plan file, pinned to the top of Recent so a freshly-written plan is one ⌘E away — loadRecent
+// only tracks files you've opened, so a brand-new plan would otherwise be absent until first opened.
+var PLAN_PATH = '.monacori/plan.md';
+function planQuickItem() {
+  var f = sourceByPath.get(PLAN_PATH);
+  if (!f) return null;
+  return { path: f.path, name: baseName(f.path), detail: 'plan', kind: 'source', recent: true, recentRank: -1 };
+}
 function recentItems() {
   const all = allQuickItems();
   const byPath = new Map(all.map((item) => [item.path, item]));
-  return loadRecent()
+  const items = loadRecent()
     .map((item) => byPath.get(item.path) || {
       path: item.path,
       name: baseName(item.path),
@@ -190,6 +198,9 @@ function recentItems() {
       recentRank: 0,
     })
     .map((item, index) => ({ ...item, recent: true, recentRank: index }));
+  const plan = planQuickItem();
+  if (plan) return [plan].concat(items.filter((it) => it.path !== plan.path));
+  return items;
 }
 
 function scoreQuickItem(item, query) {

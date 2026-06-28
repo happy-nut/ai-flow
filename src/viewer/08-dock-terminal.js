@@ -224,9 +224,13 @@ function openMemoView() {
     sendBtn.setAttribute('data-i18n', 'merged.sendToTerminal');
     sendBtn.textContent = t('merged.sendToTerminal');
     sendBtn.addEventListener('click', function () {
+      // The memo is a task instruction, so it leads with the plan contract (plan first, decompose into
+      // verifiable steps, write the plan to .monacori/plan.md) — same prefix change requests get. Empty memo
+      // sends nothing extra.
       var text = area.value;
+      var planned = text.trim() ? mergePromptFor('plan') + '\n\n' + text : text;
       dock.close();
-      window.__monacoriTerminal.enterSendMode(text);
+      window.__monacoriTerminal.enterSendMode(planned);
     });
     dock.bar.insertBefore(sendBtn, dock.bar.querySelector('.dock-max'));
   }
@@ -684,6 +688,7 @@ if (window.monacoriMenu && typeof window.monacoriMenu.onCloseTab === 'function')
   var gearBtn = document.getElementById('app-info-btn');
   var flag = document.getElementById('app-update-flag');
   var updateBtn = document.getElementById('app-info-update');
+  var pta = document.getElementById('settings-prompt-plan');
   var qta = document.getElementById('settings-prompt-q');
   var cta = document.getElementById('settings-prompt-c');
   var resetBtn = document.getElementById('settings-reset');
@@ -696,6 +701,7 @@ if (window.monacoriMenu && typeof window.monacoriMenu.onCloseTab === 'function')
   }
   function fill() {
     var s = loadMergePrompts();
+    if (pta) { pta.value = typeof s.plan === 'string' ? s.plan : ''; pta.placeholder = defaultMergePrompt('plan'); }
     if (qta) { qta.value = typeof s.q === 'string' ? s.q : ''; qta.placeholder = defaultMergePrompt('q'); }
     if (cta) { cta.value = typeof s.c === 'string' ? s.c : ''; cta.placeholder = defaultMergePrompt('c'); }
   }
@@ -731,9 +737,10 @@ if (window.monacoriMenu && typeof window.monacoriMenu.onCloseTab === 'function')
       }).catch(function () { updateBtn.disabled = false; if (status) status.textContent = t('settings.updateFailed'); });
     });
   }
+  if (pta) pta.addEventListener('input', function () { saveMergePrompt('plan', pta.value); flash(); });
   if (qta) qta.addEventListener('input', function () { saveMergePrompt('q', qta.value); flash(); });
   if (cta) cta.addEventListener('input', function () { saveMergePrompt('c', cta.value); flash(); });
-  if (resetBtn) resetBtn.addEventListener('click', function () { saveMergePrompt('q', ''); saveMergePrompt('c', ''); fill(); flash(); });
+  if (resetBtn) resetBtn.addEventListener('click', function () { saveMergePrompt('plan', ''); saveMergePrompt('q', ''); saveMergePrompt('c', ''); fill(); flash(); });
   // Terminal-bell notification toggle (default ON — persistRead returns undefined when never set).
   var bellCb = document.getElementById('set-bell-notify');
   if (bellCb) {

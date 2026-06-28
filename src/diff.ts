@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { DiffFile, DiffHunk, DiffLine, ReviewFileState, SourceFile } from "./types.js";
-import { FLOW_DIR, IMAGE_MAX_BYTES, SOURCE_MAX_FILE_BYTES, SOURCE_MAX_FILES, SOURCE_MAX_TOTAL_BYTES } from "./constants.js";
+import { FLOW_DIR, IMAGE_MAX_BYTES, PLAN_FILE, SOURCE_MAX_FILE_BYTES, SOURCE_MAX_FILES, SOURCE_MAX_TOTAL_BYTES } from "./constants.js";
 import { formatBytes, hashText, isLikelyBinary, languageForPath, stripDiffPath } from "./util.js";
 import { git, repoRoot } from "./git.js";
 
@@ -265,6 +265,14 @@ export function collectSourceFiles(diffFiles: DiffFile[], rootArg?: string): Sou
     if (isSourceCandidate(path)) {
       paths.add(path);
     }
+  }
+  // The agent's plan lives under the gitignored FLOW_DIR, so neither `git ls-files --exclude-standard` nor
+  // isSourceCandidate (which excludes FLOW_DIR) ever surfaces it. Force-include it when present so the plan
+  // shows up as a normal source file — rendered as Markdown, searchable in Quick Open, and commentable. The
+  // watch re-runs this every tick, so a plan written after launch appears on the next refresh.
+  const planRel = `${FLOW_DIR}/${PLAN_FILE}`;
+  if (existsSync(join(root, planRel))) {
+    paths.add(planRel);
   }
 
   const sourceFiles: SourceFile[] = [];

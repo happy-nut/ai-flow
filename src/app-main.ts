@@ -9,6 +9,7 @@ import { readGitLog, readCommitDiff } from "./git-log.js";
 import { readUnifiedDiff } from "./diff.js";
 import { isGitRepository } from "./git.js";
 import { renderWelcomeHtml } from "./render.js";
+import { relaunchUpdatedApp } from "./self-update.js";
 import { createHash } from "node:crypto";
 import { spawn as spawnPty, type IPty } from "node-pty";
 
@@ -41,7 +42,8 @@ type WinState = {
 // plus a boot log with its on-disk path — making it obvious whether `mo` launched THIS checkout or
 // the globally-installed package (their version numbers can be identical; the path is the tell).
 const DEV_BUILD = process.env.MONACORI_DEV === "1";
-const APP_TITLE = DEV_BUILD ? "monacori (dev)" : "monacori";
+const APP_NAME = "Monacori";
+const APP_TITLE = DEV_BUILD ? `${APP_NAME} (dev)` : APP_NAME;
 const FLOW_DIR = ".monacori";
 const REVIEW_FILE = "app-review.html";
 const WATCH_INTERVAL_MS = 1000;
@@ -73,12 +75,13 @@ function isLightTheme(): boolean {
   }
 }
 
-app.setName("monacori");
+app.setName(APP_NAME);
 // Best-effort re-brand at startup. macOS shows the Dock / Cmd+Tab / menu-bar name from Electron.app's
-// CFBundleName + executable name, which app.setName() CANNOT change — only scripts/patch-electron-name.mjs
-// (run at postinstall) renames them. That postinstall step can be skipped (npm --ignore-scripts) or fail on
-// perms, leaving "Electron" everywhere. Re-run the patch here in a Node context (ELECTRON_RUN_AS_NODE) so a
-// fresh install self-heals; it's idempotent and takes effect on the NEXT launch.
+// bundle directory, LaunchServices id, CFBundleName, and executable name, which app.setName() CANNOT change.
+// scripts/patch-electron-name.mjs (run at postinstall) patches those on disk. That postinstall step can be
+// skipped (npm --ignore-scripts) or fail on perms, leaving "Electron" everywhere. Re-run the patch here in a
+// Node context (ELECTRON_RUN_AS_NODE) so a fresh install self-heals; it's idempotent and takes effect on the
+// NEXT launch.
 if (process.platform === "darwin") {
   try {
     const patchScript = join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "patch-electron-name.mjs");
@@ -210,23 +213,16 @@ ipcMain.handle("monacori:self-update", (event) => new Promise<{ ok: boolean; err
   child.on("close", (code) => {
     if (code !== 0) { resolve({ ok: false, error: (out || "npm install failed").trim().slice(-600) }); return; }
     resolve({ ok: true });
-    // The global install replaced our on-disk dist, so THIS process is stale. Start the freshly-installed
-    // CLI as a NEW detached process, then exit. If `mo` isn't on the (GUI) app's PATH it errors or exits
-    // non-zero — fall back to app.relaunch() so the user is never left without a restart (the bug: a failed
-    // `mo` spawn under detached/unref went unnoticed and the app just exited without relaunching).
+    // The global install replaced our on-disk dist, so THIS process is stale. Use Electron's native relaunch
+    // path instead of shelling out to `mo`: GUI apps often have a thin PATH, and a detached shell can fail
+    // without a reliable event before our exit timer fires.
     setTimeout(() => {
-      let done = false;
-      const relaunch = () => { if (done) return; done = true; try { app.relaunch(); } catch { /* nothing else to try */ } app.exit(0); };
       try {
-        const c = spawn("mo", [], { cwd, detached: true, stdio: "ignore", env: sanitizeTerminalEnv(process.env), shell: true });
-        c.on("error", relaunch);
-        c.on("exit", (exitCode) => { if (exitCode && exitCode !== 0) relaunch(); });
-        c.unref();
-        setTimeout(() => { if (!done) { done = true; app.exit(0); } }, 800); // `mo` launched fine -> hand off and exit
-      } catch {
-        relaunch();
+        relaunchUpdatedApp(app, process.argv, cwd);
+      } catch (error) {
+        console.error("monacori: update installed, but relaunch failed: " + (error instanceof Error ? error.message : String(error)));
       }
-    }, 600);
+    }, 250);
   });
 }));
 

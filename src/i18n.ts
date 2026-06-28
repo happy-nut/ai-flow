@@ -157,7 +157,8 @@ export const MESSAGES: Record<string, Record<string, string>> = {
 
     // Settings — Merge prompts
     "mergePrompts.title": "Merge prompts",
-    "mergePrompts.desc": "Heading prepended to the merged prompt opened with ⌘⇧/ (questions) and ⌘⇧. (change requests). Leave blank to use the default.",
+    "mergePrompts.desc": "Headings prepended to the prompts you send to the agent. The plan contract is prepended to change requests (⌘⇧.) and to the prompt memo. Leave any field blank to use the default.",
+    "mergePrompts.planHeading": "Plan contract (change requests + memo)",
     "mergePrompts.qHeading": "Questions heading",
     "mergePrompts.cHeading": "Change-requests heading",
     "mergePrompts.reset": "Reset to defaults",
@@ -170,8 +171,8 @@ export const MESSAGES: Record<string, Record<string, string>> = {
     "composer.cancel": "Cancel",
     "composer.hint": "⌘Enter to save, Esc to cancel",
     "composer.delete": "Delete",
-    "comment.kind.q": "❓ Question",
-    "comment.kind.c": "✎ Change request",
+    "comment.kind.q": "Question",
+    "comment.kind.c": "Change request",
     "badge.questions": "question(s)",
     "badge.changeRequests": "change request(s)",
 
@@ -196,6 +197,8 @@ export const MESSAGES: Record<string, Record<string, string>> = {
     // Merge-prompt default agent contracts (these follow the locale — a Korean user gets Korean defaults)
     "mergePrompt.default.q": "The following are questions about code you just wrote. Answer each one — explain the intent, rationale, or context. Do not change any code; this clarifies understanding before any revisions.",
     "mergePrompt.default.c": "The following are change requests for code you just wrote. For each, edit the code at the quoted location to satisfy the request. Keep changes minimal and focused; do not make unrelated edits.",
+    // Plan contract — prepended to change requests and the prompt memo so every task starts with a small, verifiable plan written to a file.
+    "plan.contract": "Before changing any code, write a short implementation PLAN to `.monacori/plan.md` as Markdown. Break the work into small, independently verifiable steps — each with a one-line check for how you'll confirm it works. Get the plan right first, then implement one step at a time, keeping each step small enough to review on its own.",
   },
   ko: {
     // Tabs (sidebar)
@@ -344,7 +347,8 @@ export const MESSAGES: Record<string, Record<string, string>> = {
 
     // Settings — Merge prompts
     "mergePrompts.title": "병합 프롬프트",
-    "mergePrompts.desc": "⌘⇧/ (질문) 및 ⌘⇧. (변경요청)로 여는 병합 프롬프트 맨 앞에 붙는 머리말입니다. 비워 두면 기본값을 사용합니다.",
+    "mergePrompts.desc": "에이전트에게 보내는 프롬프트 맨 앞에 붙는 머리말입니다. 플랜 계약문은 변경요청(⌘⇧.)과 프롬프트 메모 앞에 붙습니다. 각 칸을 비워 두면 기본값을 사용합니다.",
+    "mergePrompts.planHeading": "플랜 계약문 (변경요청 + 메모)",
     "mergePrompts.qHeading": "질문 머리말",
     "mergePrompts.cHeading": "변경요청 머리말",
     "mergePrompts.reset": "기본값으로 초기화",
@@ -357,8 +361,8 @@ export const MESSAGES: Record<string, Record<string, string>> = {
     "composer.cancel": "취소",
     "composer.hint": "⌘Enter로 저장, Esc로 취소",
     "composer.delete": "삭제",
-    "comment.kind.q": "❓ 질문",
-    "comment.kind.c": "✎ 변경 요청",
+    "comment.kind.q": "질문",
+    "comment.kind.c": "변경 요청",
     "badge.questions": "개 질문",
     "badge.changeRequests": "개 변경 요청",
 
@@ -384,5 +388,7 @@ export const MESSAGES: Record<string, Record<string, string>> = {
     // Merge-prompt default agent contracts (Korean default for Korean users)
     "mergePrompt.default.q": "다음은 방금 작성한 코드에 대한 질문입니다. 각 질문에 답하면서 의도, 근거, 맥락을 설명하세요. 코드는 변경하지 마세요. 이 단계는 수정에 앞서 이해를 명확히 하기 위한 것입니다.",
     "mergePrompt.default.c": "다음은 방금 작성한 코드에 대한 변경 요청입니다. 각 요청에 대해 인용된 위치의 코드를 수정하여 요구사항을 충족하세요. 변경은 최소한으로 집중해서 하고, 관련 없는 수정은 하지 마세요.",
+    // 플랜 계약문 — 모든 작업이 파일로 작성된 작고 검증 가능한 플랜에서 시작하도록 변경요청과 프롬프트 메모 앞에 붙는다.
+    "plan.contract": "코드를 변경하기 전에, 먼저 `.monacori/plan.md`에 마크다운으로 짧은 구현 플랜을 작성하세요. 작업을 독립적으로 검증 가능한 작은 단계로 쪼개고, 각 단계마다 어떻게 확인할지 한 줄짜리 검증 기준을 적으세요. 플랜이 맞는지 먼저 확정한 뒤 한 번에 한 단계씩 구현하고, 각 단계는 따로 리뷰할 수 있을 만큼 작게 유지하세요.",
   },
 };

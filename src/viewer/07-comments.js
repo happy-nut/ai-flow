@@ -72,6 +72,19 @@ function commentsAt(path, line) {
 function commentKindLabel(kind) {
   return kind === 'q' ? t('comment.kind.q') : t('comment.kind.c');
 }
+// Monochrome inline icons for the two comment kinds: a help-circle for questions, a pencil for change
+// requests (the pencil path matches the activity-rail "c" button). No emoji, no color — stroke=currentColor
+// so the kind pill stays monotone (.mc-kind in viewer.css); the icon, not the color, distinguishes q vs c.
+function commentKindIcon(kind) {
+  var path = kind === 'q'
+    ? '<circle cx="12" cy="12" r="9"/><path d="M9.4 9.3a2.7 2.7 0 0 1 5.2 1c0 1.8-2.6 2.4-2.6 2.4"/><line x1="12" y1="16.7" x2="12.01" y2="16.7"/>'
+    : '<path d="M14.5 5.5l4 4"/><path d="M4.5 19.5l1-4 10-10 3 3-10 10z"/>';
+  return '<svg class="mc-kind-ic" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + path + '</svg>';
+}
+// Full inner HTML for a .mc-kind pill: monochrome icon + the (localized) label.
+function commentKindHtml(kind) {
+  return commentKindIcon(kind) + '<span class="mc-kind-text">' + escapeHtml(commentKindLabel(kind)) + '</span>';
+}
 function relevantLines(path) {
   var set = {};
   reviewComments.forEach(function (c) { if (c.path === path) set[c.line] = true; });
@@ -175,14 +188,14 @@ function threadHtml(path, line) {
   commentsAt(path, line).forEach(function (c) {
     if (composerState && composerState.editSeq === c.seq) return; // being edited -> rendered as the composer below
     html += '<div class="mc-card mc-' + c.kind + '">'
-      + '<div class="mc-card-head"><span class="mc-kind">' + commentKindLabel(c.kind) + '</span>'
+      + '<div class="mc-card-head"><span class="mc-kind">' + commentKindHtml(c.kind) + '</span>'
       + '<button type="button" class="mc-del" data-seq="' + c.seq + '" title="' + escapeHtml(t('composer.delete')) + '">×</button></div>'
       + '<div class="mc-card-body">' + escapeHtml(c.text) + '</div></div>';
   });
   if (composerState && composerState.path === path && composerState.line === line) {
     var ph = composerState.kind === 'q' ? t('composer.question') : t('composer.changeRequest');
     html += '<div class="mc-card mc-' + composerState.kind + ' mc-composer">'
-      + '<div class="mc-card-head"><span class="mc-kind">' + commentKindLabel(composerState.kind) + '</span><span class="mc-target" title="' + escapeHtml(composerState.path || '') + '">' + escapeHtml(composerTargetLabel(composerState)) + '</span></div>'
+      + '<div class="mc-card-head"><span class="mc-kind">' + commentKindHtml(composerState.kind) + '</span><span class="mc-target" title="' + escapeHtml(composerState.path || '') + '">' + escapeHtml(composerTargetLabel(composerState)) + '</span></div>'
       + '<textarea class="mc-input" rows="3" placeholder="' + escapeHtml(ph) + '">' + escapeHtml(composerState.editText || '') + '</textarea>'
       + '<div class="mc-actions"><button type="button" class="mc-btn mc-save">' + escapeHtml(t('composer.save')) + '</button>'
       + '<button type="button" class="mc-btn mc-ghost mc-cancel">' + escapeHtml(t('composer.cancel')) + '</button>'
@@ -374,7 +387,7 @@ function saveComposer(ta) {
 // Settings → Merge prompts (stored per browser in localStorage); buildMergedText + the textarea
 // placeholders fall back to these when the stored value is empty.
 function defaultMergePrompt(kind) {
-  return t(kind === 'q' ? 'mergePrompt.default.q' : 'mergePrompt.default.c');
+  return t(kind === 'q' ? 'mergePrompt.default.q' : kind === 'plan' ? 'plan.contract' : 'mergePrompt.default.c');
 }
 var mergePromptsKey = 'monacori-merge-prompts';
 function loadMergePrompts() {
@@ -495,6 +508,10 @@ function buildMergedText(kind) {
   var items = reviewComments.filter(function (c) { return c.kind === kind; });
   var nl = String.fromCharCode(10);
   var lines = [];
+  // Change requests are task instructions, so they lead with the plan contract: plan first, decompose into
+  // verifiable steps, write the plan to .monacori/plan.md (editable in Settings → Merge prompts). Questions
+  // are read-only clarifications, so they skip it.
+  if (kind === 'c') { lines.push(mergePromptFor('plan')); lines.push(''); }
   // Per-kind agent contract heading (editable in Settings → Merge prompts; default otherwise).
   lines.push(mergePromptFor(kind));
   lines.push('');

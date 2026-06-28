@@ -1,5 +1,8 @@
 export const FLOW_DIR = ".monacori";
 export const GITIGNORE_FILE = ".gitignore";
+// The agent's implementation plan, written under FLOW_DIR. Force-surfaced as a source file so it renders
+// as Markdown, shows in Quick Open, and takes line comments — even though FLOW_DIR is gitignored.
+export const PLAN_FILE = "plan.md";
 export const CONFIG_FILE = "config.json";
 export const STATE_FILE = "state.md";
 export const DECISIONS_FILE = "decisions.md";
